@@ -1,7 +1,38 @@
+import re
 import time
 import os
 import httpx
 from groq import Groq
+
+# Filler words to strip from raw transcription before LLM formatting.
+# Pattern matches whole words only (word boundaries), case-insensitive.
+_FILLER_WORDS_RU = [
+    r"э+[мм]+", r"м+м+", r"а+м+", r"хм+",       # эм, ммм, ам, хм
+    r"ну+", r"вот", r"короче", r"типа",           # ну, вот, короче, типа
+    r"как\s*бы", r"значит", r"ладно",             # как бы, значит, ладно
+    r"так\s*сказать", r"в\s*общем",               # так сказать, в общем
+    r"слушай",                                     # слушай
+]
+_FILLER_WORDS_EN = [
+    r"u+[hm]+", r"u+m+", r"e+r+", r"a+h+",       # uh, um, er, ah
+    r"like", r"you\s*know", r"i\s*mean",           # like, you know, I mean
+    r"basically", r"literally", r"actually",       # basically, literally
+    r"so+", r"well",                               # so, well
+]
+_FILLER_RE = re.compile(
+    r"\b(?:" + "|".join(_FILLER_WORDS_RU + _FILLER_WORDS_EN) + r")\b[,.]?\s*",
+    re.IGNORECASE,
+)
+
+
+def strip_fillers(text):
+    """Remove filler words from transcribed text."""
+    if not text:
+        return ""
+    cleaned = _FILLER_RE.sub(" ", text)
+    # Collapse multiple spaces
+    cleaned = re.sub(r"  +", " ", cleaned).strip()
+    return cleaned
 
 
 class Transcriber:
@@ -59,29 +90,36 @@ class Transcriber:
             text += '.'
         return text
 
-    def format_text(self, raw_text):
+    def format_text(self, raw_text, app_context=""):
         """Format raw transcription with LLM: paragraphs, punctuation, typo fixes."""
+        # Strip filler words before processing
+        raw_text = strip_fillers(raw_text)
+
         # Short texts: basic formatting only (no LLM call needed)
         if len(raw_text.split()) < 10:
             return self._basic_format(raw_text)
 
+        system_prompt = (
+            "Ты получаешь текст, транскрибированный с аудио. "
+            "Твоя задача — ТОЛЬКО отформатировать его:\n"
+            "1. Расставь знаки препинания\n"
+            "2. Исправь опечатки и ошибки транскрипции\n"
+            "3. Разбей на абзацы если текст длинный\n"
+            "4. Верни ТОЛЬКО исправленный текст\n\n"
+            "ЗАПРЕЩЕНО: добавлять свои слова, комментарии, "
+            "заголовки, эмодзи, фразы вроде 'продолжение следует'. "
+            "Если текст короткий — верни его как есть с исправленной пунктуацией."
+        )
+        if app_context:
+            system_prompt += (
+                f"\n\nКОНТЕКСТ: текст вводится в {app_context}. "
+                "Адаптируй стиль и длину под этот контекст."
+            )
+
         response = self.client.chat.completions.create(
             model=self.llm_model,
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Ты получаешь текст, транскрибированный с аудио. "
-                        "Твоя задача — ТОЛЬКО отформатировать его:\n"
-                        "1. Расставь знаки препинания\n"
-                        "2. Исправь опечатки и ошибки транскрипции\n"
-                        "3. Разбей на абзацы если текст длинный\n"
-                        "4. Верни ТОЛЬКО исправленный текст\n\n"
-                        "ЗАПРЕЩЕНО: добавлять свои слова, комментарии, "
-                        "заголовки, эмодзи, фразы вроде 'продолжение следует'. "
-                        "Если текст короткий — верни его как есть с исправленной пунктуацией."
-                    ),
-                },
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": raw_text},
             ],
             temperature=0.3,

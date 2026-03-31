@@ -41,9 +41,10 @@ from config import (
 )
 from recorder import AudioRecorder
 from transcriber import Transcriber
-from inserter import insert_text, check_accessibility
+from inserter import insert_text, check_accessibility, get_app_context
 from hotkey import HotkeyManager, format_hotkey_name
 from overlay import RecordingOverlay
+from history import add_entry, load_history, truncate_text, clear_history
 from settings_window import SettingsWindowController
 from local_transcriber import LocalTranscriber
 
@@ -134,6 +135,10 @@ class VoiceTypeApp(rumps.App):
 
         self._settings_controller = None
 
+        # History submenu
+        self.history_menu = rumps.MenuItem("История")
+        self._rebuild_history_menu()
+
         self.settings_item = rumps.MenuItem(
             "Настройки...", callback=self._open_settings
         )
@@ -150,6 +155,8 @@ class VoiceTypeApp(rumps.App):
             [rumps.MenuItem("Язык"), [self.lang_ru, self.lang_en]],
             self.format_toggle,
             self.autostart_toggle,
+            None,
+            self.history_menu,
             None,
             self.settings_item,
             self.config_path_item,
@@ -256,7 +263,7 @@ class VoiceTypeApp(rumps.App):
     def _start_duration_timer(self):
         self._rec_start_time = time.time()
         self.overlay.set_duration("0:00")
-        self._duration_timer = rumps.Timer(self._update_duration, 1.0)
+        self._duration_timer = rumps.Timer(self._update_duration, 0.25)
         self._duration_timer.start()
 
     def _stop_duration_timer(self):
@@ -268,9 +275,8 @@ class VoiceTypeApp(rumps.App):
         elapsed = int(time.time() - self._rec_start_time)
         mins, secs = divmod(elapsed, 60)
         self.overlay.set_duration(f"{mins}:{secs:02d}")
-        # Update amplitude from recorder
-        amp = self.recorder.get_current_amplitude()
-        self.overlay.set_amplitude(amp)
+        # Feed amplitude history to waveform
+        self.overlay.set_amplitudes(self.recorder.get_amplitude_history())
 
     # --- Hotkey learning ---
 
@@ -357,6 +363,39 @@ class VoiceTypeApp(rumps.App):
         else:
             install_autostart()
             sender.state = True
+
+    # --- History ---
+
+    def _rebuild_history_menu(self):
+        """Rebuild the history submenu from saved entries."""
+        self.history_menu.clear()
+        entries = load_history()
+        if not entries:
+            empty = rumps.MenuItem("(пусто)")
+            empty.set_callback(None)
+            self.history_menu.add(empty)
+            return
+        for i, entry in enumerate(entries[:15]):  # Show last 15 in menu
+            title = f"{entry['timestamp']}  {truncate_text(entry['text'])}"
+            item = rumps.MenuItem(title)
+            text = entry["text"]
+            item.set_callback(lambda _, t=text: self._copy_history_entry(t))
+            self.history_menu.add(item)
+        self.history_menu.add(rumps.separator)
+        clear_item = rumps.MenuItem("Очистить историю", callback=self._clear_history)
+        self.history_menu.add(clear_item)
+
+    def _copy_history_entry(self, text):
+        """Copy a history entry to clipboard."""
+        from AppKit import NSPasteboard, NSPasteboardTypeString
+        pb = NSPasteboard.generalPasteboard()
+        pb.clearContents()
+        pb.setString_forType_(text, NSPasteboardTypeString)
+        log.info("History entry copied to clipboard")
+
+    def _clear_history(self, _):
+        clear_history()
+        self._rebuild_history_menu()
 
     def _open_settings(self, _):
         """Open native settings window."""
@@ -501,16 +540,23 @@ class VoiceTypeApp(rumps.App):
             raw_text = self.transcriber.transcribe(audio_path)
 
             # Step 2: Format (always cloud — local LLMs don't handle Russian well)
+            app_ctx = get_app_context()
+            if app_ctx:
+                log.info("App context: %s", app_ctx)
+
             if self.config.get("format_with_llm", True) and hasattr(self.transcriber, 'format_text'):
-                text = self.transcriber.format_text(raw_text)
+                text = self.transcriber.format_text(raw_text, app_context=app_ctx)
             elif self.config.get("format_with_llm", True) and self._cloud_transcriber:
-                text = self._cloud_transcriber.format_text(raw_text)
+                text = self._cloud_transcriber.format_text(raw_text, app_context=app_ctx)
             else:
                 text = raw_text
 
             log.info("Результат: %s", text[:100])
             insert_text(text)
             log.info("Текст вставлен")
+            # Save to history & update menu
+            add_entry(text)
+            self._run_on_main(self._rebuild_history_menu)
         except Exception as e:
             log.error("Ошибка транскрипции: %s", e)
             error_msg = str(e)[:100]
@@ -518,7 +564,10 @@ class VoiceTypeApp(rumps.App):
                 APP_NAME, "Ошибка транскрипции", error_msg
             ))
         finally:
-            self.transcriber.cleanup(audio_path)
+            if self.transcriber:
+                self.transcriber.cleanup(audio_path)
+            else:
+                AudioRecorder.cleanup_file(audio_path)
             self._run_on_main(lambda: self._set_state(IDLE))
 
     # --- Lifecycle ---

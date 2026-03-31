@@ -13,6 +13,8 @@ if getattr(sys, "frozen", False):
     if os.path.exists(_pa):
         ctypes.cdll.LoadLibrary(_pa)
 
+import collections
+
 import numpy as np
 import sounddevice as sd
 from scipy.io import wavfile
@@ -22,6 +24,9 @@ log = logging.getLogger("VoiceType")
 SAMPLE_RATE = 16000
 CHANNELS = 1
 DTYPE = np.int16
+
+# Number of amplitude samples to keep for waveform visualization
+AMPLITUDE_HISTORY_SIZE = 64
 
 
 class AudioRecorder:
@@ -34,6 +39,9 @@ class AudioRecorder:
         self._recording = False
         self._lock = threading.Lock()
         self._current_rms = 0.0
+        self._amplitude_history = collections.deque(
+            [0.0] * AMPLITUDE_HISTORY_SIZE, maxlen=AMPLITUDE_HISTORY_SIZE
+        )
 
     def _callback(self, indata, frames, time_info, status):
         if status:
@@ -48,7 +56,9 @@ class AudioRecorder:
             self._write_pos = end
         # Compute RMS for amplitude visualization
         try:
-            self._current_rms = float(np.sqrt(np.mean(indata.astype(np.float32) ** 2)))
+            rms = float(np.sqrt(np.mean(indata.astype(np.float32) ** 2)))
+            self._current_rms = rms
+            self._amplitude_history.append(min(rms / 5000.0, 1.0))
         except Exception:
             self._current_rms = 0.0
 
@@ -61,6 +71,9 @@ class AudioRecorder:
             self._buffer = np.zeros((max_samples, CHANNELS), dtype=DTYPE)
             self._write_pos = 0
             self._current_rms = 0.0
+            self._amplitude_history = collections.deque(
+                [0.0] * AMPLITUDE_HISTORY_SIZE, maxlen=AMPLITUDE_HISTORY_SIZE
+            )
             self._recording = True
             try:
                 self._stream = sd.InputStream(
@@ -111,8 +124,11 @@ class AudioRecorder:
 
     def get_current_amplitude(self):
         """Return current RMS amplitude (0.0-1.0 normalized)."""
-        # Normalize: int16 max is 32767, typical speech RMS ~1000-5000
         return min(self._current_rms / 5000.0, 1.0)
+
+    def get_amplitude_history(self):
+        """Return list of recent amplitude values (0.0-1.0) for waveform."""
+        return list(self._amplitude_history)
 
     @staticmethod
     def cleanup_file(path):

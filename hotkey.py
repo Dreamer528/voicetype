@@ -192,7 +192,7 @@ class HotkeyManager:
         elif event_type == NX_SYSDEFINED:
             ns_event = NSEvent.eventWithCGEvent_(event)
             if ns_event is None or ns_event.subtype() != MEDIA_KEY_SUBTYPE:
-                return
+                return False
             data1 = ns_event.data1()
             nx_key_id = (data1 >> 16) & 0xFFFF
             nx_flags = (data1 >> 8) & 0xFF

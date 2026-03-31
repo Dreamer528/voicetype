@@ -90,10 +90,14 @@ def load_config():
     if not os.path.exists(CONFIG_FILE):
         config = DEFAULT_CONFIG.copy()
     else:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            saved = json.load(f)
-        config = DEFAULT_CONFIG.copy()
-        config.update(saved)
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            config = DEFAULT_CONFIG.copy()
+            config.update(saved)
+        except (json.JSONDecodeError, IOError) as e:
+            log.warning("Failed to load config: %s, using defaults", e)
+            config = DEFAULT_CONFIG.copy()
 
     # API key: prefer Keychain
     keychain_key = get_keychain_key()

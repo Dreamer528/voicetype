@@ -1,4 +1,10 @@
-"""Animated overlay for recording/processing states with amplitude visualization."""
+"""Premium floating overlay with flowing waveform visualization.
+
+Recording: live audio waveform with smooth bezier curves, gradient fills,
+glow effects, and mirror reflection. Responds to actual microphone input.
+
+Processing: calm pulsing wave with purple/blue gradient.
+"""
 
 import math
 import objc
@@ -9,6 +15,7 @@ from AppKit import (
     NSFont,
     NSFontAttributeName,
     NSForegroundColorAttributeName,
+    NSGradient,
     NSMutableParagraphStyle,
     NSParagraphStyleAttributeName,
     NSScreen,
@@ -20,30 +27,32 @@ from AppKit import (
 from Foundation import NSMakeRect, NSString, NSUserDefaults
 import Quartz
 
-
-# Window size
-ORB_SIZE = 120
-WINDOW_W = 200
-WINDOW_H = 220
+# Window dimensions — wide pill shape
+WINDOW_W = 280
+WINDOW_H = 100
+WAVE_H = 40        # height of waveform area
+WAVE_Y_CENTER = 52  # vertical center of waveform
+NUM_BARS = 48       # number of waveform bars
 
 # UserDefaults key for saved position
 _POS_KEY = "VoiceTypeOverlayPosition"
 
 
-class OrbView(NSView):
-    """Custom view that draws animated pulsing orb with amplitude and duration."""
+class WaveformView(NSView):
+    """Custom view rendering a premium audio waveform visualization."""
 
     def initWithFrame_(self, frame):
-        self = objc.super(OrbView, self).initWithFrame_(frame)
+        self = objc.super(WaveformView, self).initWithFrame_(frame)
         if self is None:
             return None
         self._phase = 0.0
-        self._state = "idle"  # idle, recording, processing
+        self._state = "idle"
         self._timer = None
-        self._amplitude = 0.0      # 0.0-1.0 from microphone RMS
-        self._duration_text = ""    # "0:05", "1:23"
-        self._label_text = ""       # "Говорите..." or "Processing..."
-        self._hint_text = ""        # "Esc — отмена"
+        self._amplitudes = [0.0] * NUM_BARS
+        self._smoothed = [0.0] * NUM_BARS
+        self._duration_text = ""
+        self._label_text = ""
+        self._hint_text = ""
         return self
 
     def isOpaque(self):
@@ -55,8 +64,16 @@ class OrbView(NSView):
         self.setNeedsDisplay_(True)
 
     @objc.python_method
-    def set_amplitude(self, value):
-        self._amplitude = max(0.0, min(1.0, value))
+    def set_amplitudes(self, values):
+        """Set raw amplitude values from recorder history."""
+        # Resample to NUM_BARS if needed
+        n = len(values)
+        if n == 0:
+            return
+        step = n / NUM_BARS
+        self._amplitudes = [
+            values[min(int(i * step), n - 1)] for i in range(NUM_BARS)
+        ]
 
     @objc.python_method
     def set_duration(self, text):
@@ -86,174 +103,274 @@ class OrbView(NSView):
             self._timer = None
 
     def tick_(self, timer):
-        self._phase += 0.05
-        # Prevent unbounded growth
+        self._phase += 0.06
         if self._phase > 628.0:
             self._phase = 0.0
+
+        # Smooth amplitudes with exponential decay (lerp towards target)
+        for i in range(NUM_BARS):
+            target = self._amplitudes[i]
+            self._smoothed[i] += (target - self._smoothed[i]) * 0.25
+
         self.setNeedsDisplay_(True)
 
     def drawRect_(self, rect):
+        w = rect.size.width
+        h = rect.size.height
+
+        # Clear
         NSColor.clearColor().set()
         NSBezierPath.fillRect_(rect)
 
         if self._state == "idle":
             return
 
-        cx = rect.size.width / 2
-        cy = rect.size.height / 2 + 10  # shift orb up for duration + label + hint
+        # Draw pill background
+        self._draw_pill_bg(w, h)
 
-        phase = self._phase
-        amp = self._amplitude
-
+        # Draw waveform
         if self._state == "recording":
-            self._draw_recording_orb(cx, cy, phase, amp)
+            self._draw_recording_waveform(w, h)
         elif self._state == "processing":
-            self._draw_processing_orb(cx, cy, phase)
+            self._draw_processing_wave(w, h)
 
-        # Duration text above orb
+        # Duration (left side)
         if self._duration_text:
-            self._draw_duration(self._duration_text, rect)
+            self._draw_text(self._duration_text, 16, WAVE_Y_CENTER - 7,
+                            size=18, weight=0.2, mono=True, alpha=0.95)
 
-        # Status label below orb
+        # Label (right side)
         if self._label_text:
-            self._draw_label(self._label_text, rect, y=22)
+            self._draw_text_right(self._label_text, w - 16, WAVE_Y_CENTER - 6,
+                                  size=12, weight=0.3, alpha=0.7)
 
-        # Hint text at bottom
+        # Hint at bottom center
         if self._hint_text:
-            self._draw_hint(self._hint_text, rect)
+            self._draw_text_center(self._hint_text, w, 6,
+                                   size=9, weight=0.0, alpha=0.35)
 
     @objc.python_method
-    def _draw_recording_orb(self, cx, cy, phase, amp):
-        """Red/orange pulsing orb modulated by microphone amplitude."""
-        amp_scale = 1.0 + amp * 0.4  # up to 40% size boost from amplitude
+    def _draw_pill_bg(self, w, h):
+        """Draw rounded pill background with subtle blur effect."""
+        radius = 20
+        pill = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            NSMakeRect(0, 0, w, h), radius, radius
+        )
+        # Dark semi-transparent background
+        bg = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.08, 0.08, 0.1, 0.85)
+        bg.set()
+        pill.fill()
 
-        for i in range(5, 0, -1):
-            t = phase + i * 0.3
-            scale = amp_scale * (1.0 + 0.15 * math.sin(t * 2.0) * i / 5.0)
-            radius = (ORB_SIZE / 2) * scale * (i / 5.0)
-            alpha = 0.15 + 0.1 * (5 - i) / 5.0
+        # Subtle border
+        border_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.3, 0.3, 0.35, 0.3)
+        border_color.set()
+        pill.setLineWidth_(0.5)
+        pill.stroke()
 
-            r = 1.0
-            g = 0.2 + 0.3 * math.sin(t * 1.5) ** 2
-            b = 0.1 + 0.2 * math.sin(t * 0.8) ** 2
+    @objc.python_method
+    def _draw_recording_waveform(self, w, h):
+        """Draw premium flowing waveform bars with glow and reflection."""
+        phase = self._phase
+        cx = w / 2
+        cy = WAVE_Y_CENTER
+
+        bar_total_w = w - 100  # leave space for duration & label
+        bar_start_x = 60
+        bar_w = bar_total_w / NUM_BARS * 0.65
+        bar_gap = bar_total_w / NUM_BARS
+
+        for i in range(NUM_BARS):
+            amp = self._smoothed[i]
+            # Add subtle idle animation even when silent
+            idle_wave = 0.03 + 0.02 * math.sin(phase * 1.5 + i * 0.15)
+            bar_amp = max(amp, idle_wave)
+
+            bar_h = bar_amp * WAVE_H
+            x = bar_start_x + i * bar_gap
+
+            # Color: warm gradient based on amplitude
+            # Low amplitude: soft teal/cyan → High amplitude: vibrant orange/red
+            t = min(bar_amp * 2.5, 1.0)
+            r = 0.2 + 0.8 * t
+            g = 0.7 - 0.3 * t
+            b = 0.9 - 0.7 * t
+
+            # Main bar (upper half)
+            color = NSColor.colorWithCalibratedRed_green_blue_alpha_(r, g, b, 0.9)
+            color.set()
+            bar_rect = NSMakeRect(x, cy, bar_w, bar_h)
+            bar_path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                bar_rect, bar_w / 2, bar_w / 2
+            )
+            bar_path.fill()
+
+            # Mirror bar (lower half) — softer
+            mirror_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                r, g, b, 0.35
+            )
+            mirror_color.set()
+            mirror_rect = NSMakeRect(x, cy - bar_h * 0.7, bar_w, bar_h * 0.7)
+            mirror_path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                mirror_rect, bar_w / 2, bar_w / 2
+            )
+            mirror_path.fill()
+
+            # Glow on loud bars
+            if bar_amp > 0.3:
+                glow_alpha = (bar_amp - 0.3) * 0.4
+                glow_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                    r, g, b, glow_alpha
+                )
+                glow_color.set()
+                glow_r = bar_w * 2.5
+                glow_rect = NSMakeRect(
+                    x - glow_r / 2 + bar_w / 2,
+                    cy - glow_r / 4,
+                    glow_r,
+                    bar_h + glow_r / 2,
+                )
+                glow_path = NSBezierPath.bezierPathWithOvalInRect_(glow_rect)
+                glow_path.fill()
+
+        # Center line — subtle
+        line_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.5, 0.7, 0.9, 0.15)
+        line_color.set()
+        line = NSBezierPath.bezierPath()
+        line.moveToPoint_((bar_start_x, cy))
+        line.lineToPoint_((bar_start_x + bar_total_w, cy))
+        line.setLineWidth_(0.5)
+        line.stroke()
+
+    @objc.python_method
+    def _draw_processing_wave(self, w, h):
+        """Draw calm purple/blue flowing sine wave for processing state."""
+        phase = self._phase
+        cy = WAVE_Y_CENTER
+        wave_start = 20
+        wave_end = w - 20
+        wave_w = wave_end - wave_start
+        num_points = 80
+
+        for layer in range(3):
+            path = NSBezierPath.bezierPath()
+            freq = 2.5 + layer * 0.7
+            amp = (WAVE_H * 0.4) * (1.0 - layer * 0.25)
+            speed = phase * (1.5 + layer * 0.3)
+            alpha = 0.5 - layer * 0.15
+
+            r = 0.4 + layer * 0.1
+            g = 0.3 + layer * 0.05
+            b = 0.9 - layer * 0.1
+
+            # Upper wave
+            for j in range(num_points + 1):
+                t = j / num_points
+                x = wave_start + t * wave_w
+                y = cy + amp * math.sin(t * freq * math.pi + speed)
+                # Taper at edges
+                edge_fade = math.sin(t * math.pi) ** 0.5
+                y = cy + (y - cy) * edge_fade
+
+                if j == 0:
+                    path.moveToPoint_((x, y))
+                else:
+                    path.lineToPoint_((x, y))
 
             color = NSColor.colorWithCalibratedRed_green_blue_alpha_(r, g, b, alpha)
             color.set()
+            path.setLineWidth_(2.0 - layer * 0.5)
+            path.stroke()
 
-            path = NSBezierPath.bezierPathWithOvalInRect_(
-                ((cx - radius, cy - radius), (radius * 2, radius * 2))
+            # Fill under the wave with very subtle gradient
+            fill_path = NSBezierPath.bezierPath()
+            for j in range(num_points + 1):
+                t = j / num_points
+                x = wave_start + t * wave_w
+                y_val = cy + amp * math.sin(t * freq * math.pi + speed)
+                edge_fade = math.sin(t * math.pi) ** 0.5
+                y_val = cy + (y_val - cy) * edge_fade
+                if j == 0:
+                    fill_path.moveToPoint_((x, y_val))
+                else:
+                    fill_path.lineToPoint_((x, y_val))
+            fill_path.lineToPoint_((wave_end, cy))
+            fill_path.lineToPoint_((wave_start, cy))
+            fill_path.closePath()
+
+            fill_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                r, g, b, alpha * 0.15
             )
-            path.fill()
+            fill_color.set()
+            fill_path.fill()
 
-        # Amplitude rings
-        if amp > 0.05:
-            for ring in range(3):
-                ring_radius = (ORB_SIZE / 2) * amp_scale + 8 + ring * 12
-                ring_alpha = 0.15 * (1.0 - ring / 3.0) * amp
-                ring_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(
-                    1.0, 0.4, 0.2, ring_alpha
-                )
-                ring_color.set()
-                ring_path = NSBezierPath.bezierPathWithOvalInRect_(
-                    ((cx - ring_radius, cy - ring_radius),
-                     (ring_radius * 2, ring_radius * 2))
-                )
-                ring_path.setLineWidth_(1.5)
-                ring_path.stroke()
-
-        # Bright center
-        center_r = 15 + 5 * math.sin(phase * 3) + amp * 8
-        bright = NSColor.colorWithCalibratedRed_green_blue_alpha_(1.0, 0.4, 0.2, 0.9)
-        bright.set()
-        NSBezierPath.bezierPathWithOvalInRect_(
-            ((cx - center_r, cy - center_r), (center_r * 2, center_r * 2))
-        ).fill()
-
-    @objc.python_method
-    def _draw_processing_orb(self, cx, cy, phase):
-        """Purple/blue spinning orb for processing."""
-        for i in range(6, 0, -1):
-            angle = phase * 2.0 + i * math.pi / 3
-            offset_x = math.cos(angle) * 8
-            offset_y = math.sin(angle) * 8
-            scale = 0.9 + 0.1 * math.sin(phase * 3 + i)
-            radius = (ORB_SIZE / 2) * scale * (i / 6.0)
-            alpha = 0.12 + 0.08 * (6 - i) / 6.0
-
-            r = 0.4 + 0.3 * math.sin(phase + i * 0.5) ** 2
-            g = 0.2 + 0.2 * math.sin(phase * 0.7 + i) ** 2
-            b = 0.8 + 0.2 * math.sin(phase * 1.2) ** 2
-
-            color = NSColor.colorWithCalibratedRed_green_blue_alpha_(r, g, b, alpha)
-            color.set()
-
-            path = NSBezierPath.bezierPathWithOvalInRect_(
-                ((cx - radius + offset_x, cy - radius + offset_y), (radius * 2, radius * 2))
+        # Pulsing dots
+        num_dots = 5
+        for d in range(num_dots):
+            t = (d + 0.5) / num_dots
+            x = wave_start + t * wave_w
+            y = cy + (WAVE_H * 0.3) * math.sin(t * 3 * math.pi + phase * 2)
+            dot_r = 2.5 + 1.0 * math.sin(phase * 3 + d)
+            dot_alpha = 0.5 + 0.3 * math.sin(phase * 2 + d * 1.5)
+            dot_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                0.6, 0.4, 1.0, dot_alpha
             )
-            path.fill()
-
-        # Bright spinning center
-        for j in range(3):
-            a = phase * 4 + j * math.pi * 2 / 3
-            dot_x = cx + math.cos(a) * 12
-            dot_y = cy + math.sin(a) * 12
-            dot_r = 6
-            bright = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.6, 0.3, 1.0, 0.8)
-            bright.set()
+            dot_color.set()
             NSBezierPath.bezierPathWithOvalInRect_(
-                ((dot_x - dot_r, dot_y - dot_r), (dot_r * 2, dot_r * 2))
+                NSMakeRect(x - dot_r, y - dot_r, dot_r * 2, dot_r * 2)
             ).fill()
 
     @objc.python_method
-    def _draw_duration(self, text, rect):
-        """Draw duration timer above the orb."""
+    def _draw_text(self, text, x, y, size=14, weight=0.0, mono=False, alpha=1.0):
+        """Draw left-aligned text at position."""
+        style = NSMutableParagraphStyle.alloc().init()
+        style.setAlignment_(0)  # Left
+        if mono:
+            font = NSFont.monospacedDigitSystemFontOfSize_weight_(size, weight)
+        else:
+            font = NSFont.systemFontOfSize_weight_(size, weight)
+        attrs = {
+            NSFontAttributeName: font,
+            NSForegroundColorAttributeName: NSColor.colorWithCalibratedWhite_alpha_(1.0, alpha),
+            NSParagraphStyleAttributeName: style,
+        }
+        ns_text = NSString.stringWithString_(text)
+        ns_text.drawAtPoint_withAttributes_((x, y), attrs)
+
+    @objc.python_method
+    def _draw_text_right(self, text, x, y, size=14, weight=0.0, alpha=1.0):
+        """Draw right-aligned text ending at x."""
+        font = NSFont.systemFontOfSize_weight_(size, weight)
+        attrs = {
+            NSFontAttributeName: font,
+            NSForegroundColorAttributeName: NSColor.colorWithCalibratedWhite_alpha_(1.0, alpha),
+        }
+        ns_text = NSString.stringWithString_(text)
+        text_size = ns_text.sizeWithAttributes_(attrs)
+        if text_size:
+            ns_text.drawAtPoint_withAttributes_((x - text_size.width, y), attrs)
+
+    @objc.python_method
+    def _draw_text_center(self, text, w, y, size=10, weight=0.0, alpha=0.5):
+        """Draw center-aligned text."""
         style = NSMutableParagraphStyle.alloc().init()
         style.setAlignment_(1)  # Center
         attrs = {
-            NSFontAttributeName: NSFont.monospacedDigitSystemFontOfSize_weight_(22, 0.2),
-            NSForegroundColorAttributeName: NSColor.whiteColor(),
+            NSFontAttributeName: NSFont.systemFontOfSize_weight_(size, weight),
+            NSForegroundColorAttributeName: NSColor.colorWithCalibratedWhite_alpha_(1.0, alpha),
             NSParagraphStyleAttributeName: style,
         }
         ns_text = NSString.stringWithString_(text)
-        text_rect = NSMakeRect(0, rect.size.height - 30, rect.size.width, 28)
-        ns_text.drawInRect_withAttributes_(text_rect, attrs)
-
-    @objc.python_method
-    def _draw_label(self, text, rect, y=22):
-        """Draw status label below the orb."""
-        style = NSMutableParagraphStyle.alloc().init()
-        style.setAlignment_(1)
-        attrs = {
-            NSFontAttributeName: NSFont.systemFontOfSize_weight_(13, 0.3),
-            NSForegroundColorAttributeName: NSColor.whiteColor(),
-            NSParagraphStyleAttributeName: style,
-        }
-        ns_text = NSString.stringWithString_(text)
-        text_rect = NSMakeRect(0, y, rect.size.width, 20)
-        ns_text.drawInRect_withAttributes_(text_rect, attrs)
-
-    @objc.python_method
-    def _draw_hint(self, text, rect):
-        """Draw small hint text at the bottom."""
-        style = NSMutableParagraphStyle.alloc().init()
-        style.setAlignment_(1)
-        attrs = {
-            NSFontAttributeName: NSFont.systemFontOfSize_(10),
-            NSForegroundColorAttributeName: NSColor.colorWithCalibratedWhite_alpha_(0.7, 0.6),
-            NSParagraphStyleAttributeName: style,
-        }
-        ns_text = NSString.stringWithString_(text)
-        text_rect = NSMakeRect(0, 4, rect.size.width, 16)
+        text_rect = NSMakeRect(0, y, w, 14)
         ns_text.drawInRect_withAttributes_(text_rect, attrs)
 
 
 class RecordingOverlay:
-    """Floating overlay window with animated orb."""
+    """Floating pill-shaped overlay with premium waveform visualization."""
 
     def __init__(self):
         screen = NSScreen.mainScreen().frame()
 
-        # Try to restore saved position, fallback to center-bottom
+        # Restore saved position or center-bottom
         defaults = NSUserDefaults.standardUserDefaults()
         saved = defaults.dictionaryForKey_(_POS_KEY)
         if saved and "x" in saved and "y" in saved:
@@ -274,14 +391,15 @@ class RecordingOverlay:
         self.window.setBackgroundColor_(NSColor.clearColor())
         self.window.setIgnoresMouseEvents_(True)
         self.window.setHasShadow_(True)
-        self.window.setCollectionBehavior_(1 << 0 | 1 << 4)  # canJoinAllSpaces + transient
+        self.window.setCollectionBehavior_(1 << 0 | 1 << 4)
         self.window.setMovableByWindowBackground_(True)
 
-        self.orb_view = OrbView.alloc().initWithFrame_(((0, 0), (WINDOW_W, WINDOW_H)))
+        self.orb_view = WaveformView.alloc().initWithFrame_(
+            ((0, 0), (WINDOW_W, WINDOW_H))
+        )
         self.window.setContentView_(self.orb_view)
 
     def _save_position(self):
-        """Save current window position to UserDefaults."""
         frame = self.window.frame()
         defaults = NSUserDefaults.standardUserDefaults()
         defaults.setObject_forKey_(
@@ -290,26 +408,21 @@ class RecordingOverlay:
         )
 
     def show_recording(self, label="Говорите..."):
-        """Show recording animation."""
         self.orb_view.set_state("recording")
         self.orb_view.set_label(label)
         self.orb_view.set_hint("Esc — отмена")
         self.orb_view.set_duration("")
         self.orb_view.start_animation()
-
-        # Allow dragging with Option key held
         self.window.setIgnoresMouseEvents_(False)
 
-        # Fade in
         self.window.setAlphaValue_(0.0)
         self.window.orderFront_(None)
         NSAnimationContext.beginGrouping()
-        NSAnimationContext.currentContext().setDuration_(0.25)
+        NSAnimationContext.currentContext().setDuration_(0.3)
         self.window.animator().setAlphaValue_(1.0)
         NSAnimationContext.endGrouping()
 
     def show_processing(self, label="Обработка..."):
-        """Switch to processing animation."""
         self.orb_view.set_state("processing")
         self.orb_view.set_label(label)
         self.orb_view.set_hint("")
@@ -317,27 +430,27 @@ class RecordingOverlay:
         self.window.setIgnoresMouseEvents_(True)
 
     def hide(self):
-        """Hide overlay with fade-out."""
         self.orb_view.stop_animation()
         self.orb_view.set_state("idle")
         self._save_position()
 
-        # Fade out
         NSAnimationContext.beginGrouping()
         NSAnimationContext.currentContext().setDuration_(0.2)
         self.window.animator().setAlphaValue_(0.0)
         NSAnimationContext.endGrouping()
 
-        # Schedule orderOut after fade completes
         from Foundation import NSTimer
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.25, self.window, "orderOut:", None, False
         )
 
     def set_duration(self, text):
-        """Update the duration display."""
         self.orb_view.set_duration(text)
 
     def set_amplitude(self, value):
-        """Update the amplitude visualization."""
-        self.orb_view.set_amplitude(value)
+        """Legacy single-value amplitude (unused with waveform, kept for compat)."""
+        pass
+
+    def set_amplitudes(self, values):
+        """Set amplitude history for waveform bars."""
+        self.orb_view.set_amplitudes(values)

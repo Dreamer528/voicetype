@@ -299,12 +299,25 @@ class SettingsWindowController:
         else:
             config["groq_api_key"] = self.api_key_field.stringValue()
 
-        config["language"] = self.LANG_CODES[self.lang_popup.indexOfSelectedItem()]
-        config["mode"] = self.MODE_CODES[self.mode_popup.indexOfSelectedItem()]
+        lang_idx = self.lang_popup.indexOfSelectedItem()
+        if 0 <= lang_idx < len(self.LANG_CODES):
+            config["language"] = self.LANG_CODES[lang_idx]
+
+        mode_idx = self.mode_popup.indexOfSelectedItem()
+        if 0 <= mode_idx < len(self.MODE_CODES):
+            config["mode"] = self.MODE_CODES[mode_idx]
+
         config["max_recording_seconds"] = int(self.max_slider.intValue())
         config["format_with_llm"] = bool(self.format_checkbox.state())
-        config["transcription_mode"] = self.TRANSCRIPTION_CODES[self.trans_popup.indexOfSelectedItem()]
-        config["local_whisper_model"] = self.LOCAL_MODELS[self.local_model_popup.indexOfSelectedItem()]
+
+        trans_idx = self.trans_popup.indexOfSelectedItem()
+        if 0 <= trans_idx < len(self.TRANSCRIPTION_CODES):
+            config["transcription_mode"] = self.TRANSCRIPTION_CODES[trans_idx]
+
+        model_idx = self.local_model_popup.indexOfSelectedItem()
+        if 0 <= model_idx < len(self.LOCAL_MODELS):
+            config["local_whisper_model"] = self.LOCAL_MODELS[model_idx]
+
         config["base_url"] = self.base_url_field.stringValue()
 
         return config
