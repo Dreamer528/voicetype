@@ -30,8 +30,6 @@ DEFAULT_CONFIG = {
     "base_url": GROQ_PROXY_BASE_URL,
     "transcription_mode": "cloud",          # cloud | local | auto
     "local_whisper_model": "base",          # tiny | base | small | medium | large-v3
-    "formatting_mode": "cloud",             # cloud | local | off
-    "local_llm_model": "mlx-community/Phi-4-mini-instruct-4bit",
 }
 
 

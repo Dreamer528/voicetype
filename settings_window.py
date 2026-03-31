@@ -117,8 +117,6 @@ class SettingsWindowController:
     MODE_CODES = ["push_to_talk", "toggle"]
     TRANSCRIPTION_MODES = ["Облако (Groq)", "Локальный (MLX)", "Авто"]
     TRANSCRIPTION_CODES = ["cloud", "local", "auto"]
-    FORMATTING_MODES = ["Облако (Groq)", "Локальный (MLX)", "Выключено"]
-    FORMATTING_CODES = ["cloud", "local", "off"]
     LOCAL_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
 
     def __init__(self, config, on_save=None, on_learn_hotkey=None, hotkey_name=""):
@@ -219,10 +217,6 @@ class SettingsWindowController:
         self.local_model_popup = _popup(self.LOCAL_MODELS)
         main_stack.addView_inGravity_(_hstack(_label("Локальная модель:"), self.local_model_popup), 1)
 
-        # Formatting mode
-        self.fmt_popup = _popup(self.FORMATTING_MODES)
-        main_stack.addView_inGravity_(_hstack(_label("Форматирование:"), self.fmt_popup), 1)
-
         # Base URL
         self.base_url_field = _text_field("https://...", width=250)
         main_stack.addView_inGravity_(_hstack(_label("Base URL:"), self.base_url_field), 1)
@@ -292,11 +286,6 @@ class SettingsWindowController:
         idx = self.LOCAL_MODELS.index(local_model) if local_model in self.LOCAL_MODELS else 1
         self.local_model_popup.selectItemAtIndex_(idx)
 
-        # Formatting mode
-        fmt_mode = self.config.get("formatting_mode", "cloud")
-        idx = self.FORMATTING_CODES.index(fmt_mode) if fmt_mode in self.FORMATTING_CODES else 0
-        self.fmt_popup.selectItemAtIndex_(idx)
-
         # Base URL
         self.base_url_field.setStringValue_(self.config.get("base_url", ""))
 
@@ -316,7 +305,6 @@ class SettingsWindowController:
         config["format_with_llm"] = bool(self.format_checkbox.state())
         config["transcription_mode"] = self.TRANSCRIPTION_CODES[self.trans_popup.indexOfSelectedItem()]
         config["local_whisper_model"] = self.LOCAL_MODELS[self.local_model_popup.indexOfSelectedItem()]
-        config["formatting_mode"] = self.FORMATTING_CODES[self.fmt_popup.indexOfSelectedItem()]
         config["base_url"] = self.base_url_field.stringValue()
 
         return config

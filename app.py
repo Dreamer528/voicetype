@@ -45,7 +45,7 @@ from inserter import insert_text, check_accessibility
 from hotkey import HotkeyManager, format_hotkey_name
 from overlay import RecordingOverlay
 from settings_window import SettingsWindowController
-from local_transcriber import LocalTranscriber, LocalFormatter
+from local_transcriber import LocalTranscriber
 
 IDLE = "idle"
 RECORDING = "recording"
@@ -84,6 +84,7 @@ class VoiceTypeApp(rumps.App):
         )
         self.overlay = RecordingOverlay()
         self.transcriber = None
+        self._cloud_transcriber = None  # kept for LLM formatting when using local whisper
         self.hotkey_manager = None
 
         # Thread-safe queue for dispatching work to the main thread.
@@ -180,6 +181,17 @@ class VoiceTypeApp(rumps.App):
         mode = self.config.get("transcription_mode", "cloud")
         language = self.config.get("language", "ru")
 
+        # Always try to init cloud transcriber (needed for LLM formatting)
+        api_key = self.config.get("groq_api_key", "")
+        if api_key:
+            self._cloud_transcriber = Transcriber(
+                api_key=api_key,
+                base_url=self.config.get("base_url", ""),
+                language=language,
+                model=self.config.get("model", "whisper-large-v3"),
+                llm_model=self.config.get("llm_model", "llama-3.3-70b-versatile"),
+            )
+
         if mode == "local" and LocalTranscriber.is_available():
             self.transcriber = LocalTranscriber(
                 model_name=self.config.get("local_whisper_model", "base"),
@@ -196,30 +208,12 @@ class VoiceTypeApp(rumps.App):
             return True
 
         # Cloud mode (default)
-        api_key = self.config.get("groq_api_key", "")
         if not api_key:
             return False
-        self.transcriber = Transcriber(
-            api_key=api_key,
-            base_url=self.config.get("base_url", ""),
-            language=language,
-            model=self.config.get("model", "whisper-large-v3"),
-            llm_model=self.config.get("llm_model", "llama-3.3-70b-versatile"),
-        )
+        self.transcriber = self._cloud_transcriber
         log.info("Using cloud transcriber (Groq)")
         return True
 
-    def _init_local_formatter(self):
-        """Initialize local LLM formatter if configured."""
-        fmt_mode = self.config.get("formatting_mode", "cloud")
-        if fmt_mode == "local" and LocalFormatter.is_available():
-            if not hasattr(self, '_local_formatter') or self._local_formatter is None:
-                self._local_formatter = LocalFormatter(
-                    model_name=self.config.get("local_llm_model",
-                                                "mlx-community/Phi-4-mini-instruct-4bit"),
-                )
-            return True
-        return False
 
     # --- State ---
 
@@ -502,24 +496,15 @@ class VoiceTypeApp(rumps.App):
                 log.error("Transcriber не инициализирован (нет API ключа?)")
                 return
 
-            # Step 1: Transcribe
+            # Step 1: Transcribe (local or cloud)
             log.info("Отправляю на транскрипцию...")
             raw_text = self.transcriber.transcribe(audio_path)
 
-            # Step 2: Format
-            fmt_mode = self.config.get("formatting_mode", "cloud")
-            if not self.config.get("format_with_llm", True) or fmt_mode == "off":
-                text = raw_text
-            elif fmt_mode == "local" and LocalFormatter.is_available():
-                if not hasattr(self, '_local_formatter') or self._local_formatter is None:
-                    self._init_local_formatter()
-                if self._local_formatter:
-                    text = self._local_formatter.format_text(
-                        raw_text, self.config.get("language", "ru"))
-                else:
-                    text = raw_text
-            elif hasattr(self.transcriber, 'format_text'):
+            # Step 2: Format (always cloud — local LLMs don't handle Russian well)
+            if self.config.get("format_with_llm", True) and hasattr(self.transcriber, 'format_text'):
                 text = self.transcriber.format_text(raw_text)
+            elif self.config.get("format_with_llm", True) and self._cloud_transcriber:
+                text = self._cloud_transcriber.format_text(raw_text)
             else:
                 text = raw_text
 
