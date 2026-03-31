@@ -8,7 +8,6 @@ Routes through proxy to avoid geo-blocks.
 import logging
 import os
 import queue
-import subprocess
 import sys
 import threading
 import time
@@ -36,7 +35,7 @@ for _noisy in ("httpx", "httpcore", "groq", "openai"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 from config import (
-    load_config, save_config, init_config, APP_NAME, CONFIG_FILE,
+    load_config, save_config, init_config, APP_NAME,
     install_autostart, uninstall_autostart, is_autostart_installed,
 )
 from recorder import AudioRecorder
@@ -142,9 +141,6 @@ class VoiceTypeApp(rumps.App):
         self.settings_item = rumps.MenuItem(
             "Настройки...", callback=self._open_settings
         )
-        self.config_path_item = rumps.MenuItem(
-            "Открыть конфиг (JSON)", callback=self._open_config
-        )
         self.quit_item = rumps.MenuItem("Выход", callback=self._quit)
 
         self.menu = [
@@ -159,7 +155,6 @@ class VoiceTypeApp(rumps.App):
             self.history_menu,
             None,
             self.settings_item,
-            self.config_path_item,
             self.quit_item,
         ]
 
@@ -427,9 +422,6 @@ class VoiceTypeApp(rumps.App):
         self.set_hotkey_item.title = f"Хоткей: {name}  [изменить]"
         self._set_state(IDLE)
         log.info("Настройки сохранены")
-
-    def _open_config(self, _):
-        subprocess.run(["open", "-a", "TextEdit", CONFIG_FILE])
 
     def _reload_config(self, _):
         """Reload config from disk and apply changes."""
