@@ -138,6 +138,10 @@ class VoiceTypeApp(rumps.App):
         self.history_menu = rumps.MenuItem("История")
         self._rebuild_history_menu()
 
+        # Rate limit display
+        self.rate_limit_item = rumps.MenuItem("LLM лимит: —")
+        self.rate_limit_item.set_callback(None)
+
         self.settings_item = rumps.MenuItem(
             "Настройки...", callback=self._open_settings
         )
@@ -152,6 +156,7 @@ class VoiceTypeApp(rumps.App):
             self.format_toggle,
             self.autostart_toggle,
             None,
+            self.rate_limit_item,
             self.history_menu,
             None,
             self.settings_item,
@@ -361,6 +366,23 @@ class VoiceTypeApp(rumps.App):
 
     # --- History ---
 
+    def _update_rate_limit_display(self):
+        """Update rate limit menu item from transcriber data."""
+        source = self._cloud_transcriber or self.transcriber
+        if not source or not hasattr(source, 'rate_limit'):
+            return
+        rl = source.rate_limit
+        if rl.get("remaining") is not None and rl.get("limit"):
+            remaining = rl["remaining"]
+            limit = rl["limit"]
+            pct = int(remaining / limit * 100)
+            label = f"LLM лимит: {remaining:,} / {limit:,} ({pct}%)"
+            if remaining == 0 and rl.get("reset"):
+                label += f"  ⏳ {rl['reset']}"
+            self.rate_limit_item.title = label
+        elif rl.get("remaining") == 0 and rl.get("reset"):
+            self.rate_limit_item.title = f"LLM лимит исчерпан ⏳ {rl['reset']}"
+
     def _rebuild_history_menu(self):
         """Rebuild the history submenu from saved entries."""
         # clear() fails if menu not yet attached to NSMenu (first call in __init__)
@@ -549,6 +571,8 @@ class VoiceTypeApp(rumps.App):
                 except Exception as fmt_err:
                     log.warning("Форматирование не удалось, вставляю как есть: %s", fmt_err)
                     text = raw_text
+                # Update rate limit display
+                self._run_on_main(self._update_rate_limit_display)
 
             log.info("Результат: %s", text[:100])
             insert_text(text)

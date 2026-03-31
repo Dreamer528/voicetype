@@ -46,6 +46,12 @@ class Transcriber:
         self.language = language
         self.model = model
         self.llm_model = llm_model
+        # Rate limit tracking (updated after each LLM call)
+        self.rate_limit = {
+            "limit": None,       # total tokens per day
+            "remaining": None,   # remaining tokens
+            "reset": None,       # reset time string
+        }
 
     def transcribe(self, audio_path, max_attempts=3):
         """Transcribe audio file via Groq Whisper through proxy. Returns raw text."""
@@ -116,16 +122,58 @@ class Transcriber:
                 "Адаптируй стиль и длину под этот контекст."
             )
 
-        response = self.client.chat.completions.create(
-            model=self.llm_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": raw_text},
-            ],
-            temperature=0.3,
-            max_tokens=7000,
-        )
-        return response.choices[0].message.content
+        try:
+            response = self.client.chat.completions.create(
+                model=self.llm_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": raw_text},
+                ],
+                temperature=0.3,
+                max_tokens=7000,
+            )
+            # Parse rate limit from response headers (via _raw_response)
+            self._update_rate_limit_from_response(response)
+            return response.choices[0].message.content
+        except Exception as e:
+            self._update_rate_limit_from_error(e)
+            raise
+
+    def _update_rate_limit_from_response(self, response):
+        """Extract rate limit info from successful API response."""
+        try:
+            raw = getattr(response, '_raw_response', None)
+            if raw and hasattr(raw, 'headers'):
+                headers = raw.headers
+                limit = headers.get('x-ratelimit-limit-tokens')
+                remaining = headers.get('x-ratelimit-remaining-tokens')
+                reset = headers.get('x-ratelimit-reset-tokens')
+                if limit:
+                    self.rate_limit["limit"] = int(limit)
+                if remaining:
+                    self.rate_limit["remaining"] = int(remaining)
+                if reset:
+                    self.rate_limit["reset"] = reset
+        except Exception:
+            pass
+
+    def _update_rate_limit_from_error(self, error):
+        """Parse rate limit info from error message."""
+        try:
+            msg = str(error)
+            if "Limit" in msg and "Used" in msg:
+                import re
+                m = re.search(r'Limit (\d+), Used (\d+)', msg)
+                if m:
+                    limit = int(m.group(1))
+                    used = int(m.group(2))
+                    self.rate_limit["limit"] = limit
+                    self.rate_limit["remaining"] = max(0, limit - used)
+                m2 = re.search(r'try again in (.+?)\.', msg)
+                if m2:
+                    self.rate_limit["reset"] = m2.group(1).strip()
+        except Exception:
+            pass
 
     def transcribe_and_format(self, audio_path):
         """Full pipeline: transcribe audio, then format with LLM."""
