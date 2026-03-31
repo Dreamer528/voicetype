@@ -368,7 +368,11 @@ class VoiceTypeApp(rumps.App):
 
     def _rebuild_history_menu(self):
         """Rebuild the history submenu from saved entries."""
-        self.history_menu.clear()
+        # clear() fails if menu not yet attached to NSMenu (first call in __init__)
+        try:
+            self.history_menu.clear()
+        except AttributeError:
+            pass
         entries = load_history()
         if not entries:
             empty = rumps.MenuItem("(пусто)")
