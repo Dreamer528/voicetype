@@ -30,8 +30,10 @@ DATA_FILES = [
 ]
 OPTIONS = {
     "argv_emulation": False,
+    "iconfile": "resources/AppIcon.icns",
     "frameworks": frameworks,
     "plist": {
+        "CFBundleIconFile": "AppIcon",
         "LSUIElement": True,
         "CFBundleName": "VoiceType",
         "CFBundleDisplayName": "VoiceType",

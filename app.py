@@ -139,7 +139,7 @@ class VoiceTypeApp(rumps.App):
         self._rebuild_history_menu()
 
         # Rate limit display
-        self.rate_limit_item = rumps.MenuItem("LLM лимит: —")
+        self.rate_limit_item = rumps.MenuItem("LLM лимит: ожидание данных...")
         self.rate_limit_item.set_callback(None)
 
         self.settings_item = rumps.MenuItem(
