@@ -29,10 +29,10 @@ import Quartz
 
 # Window dimensions — wide pill shape
 WINDOW_W = 280
-WINDOW_H = 100
-WAVE_H = 40        # height of waveform area
-WAVE_Y_CENTER = 52  # vertical center of waveform
-NUM_BARS = 48       # number of waveform bars
+WINDOW_H = 120
+WAVE_H = 32        # height of waveform area
+WAVE_Y_CENTER = 50  # vertical center of waveform
+NUM_BARS = 40       # number of waveform bars
 
 # UserDefaults key for saved position
 _POS_KEY = "VoiceTypeOverlayPosition"
@@ -134,19 +134,19 @@ class WaveformView(NSView):
         elif self._state == "processing":
             self._draw_processing_wave(w, h)
 
-        # Duration (left side)
+        # Duration (top left)
         if self._duration_text:
-            self._draw_text(self._duration_text, 16, WAVE_Y_CENTER - 7,
-                            size=18, weight=0.2, mono=True, alpha=0.95)
+            self._draw_text(self._duration_text, 20, h - 28,
+                            size=16, weight=0.2, mono=True, alpha=0.95)
 
-        # Label (right side)
+        # Label (top right)
         if self._label_text:
-            self._draw_text_right(self._label_text, w - 16, WAVE_Y_CENTER - 6,
+            self._draw_text_right(self._label_text, w - 20, h - 26,
                                   size=12, weight=0.3, alpha=0.7)
 
         # Hint at bottom center
         if self._hint_text:
-            self._draw_text_center(self._hint_text, w, 6,
+            self._draw_text_center(self._hint_text, w, 8,
                                    size=9, weight=0.0, alpha=0.35)
 
     @objc.python_method
