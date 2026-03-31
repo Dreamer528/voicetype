@@ -1,0 +1,6 @@
+rumps>=0.4.0
+sounddevice>=0.4.6
+scipy>=1.11.0
+numpy>=1.24.0
+groq>=0.4.0
+pyobjc-framework-Quartz>=9.0
