@@ -1,5 +1,9 @@
 import os
+import sys
 from setuptools import setup
+
+# py2app hits recursion limit on large dependency trees (torch, transformers)
+sys.setrecursionlimit(10000)
 
 # Find libportaudio.dylib from installed _sounddevice_data
 frameworks = []
@@ -43,11 +47,16 @@ OPTIONS = {
     },
     "packages": [
         "rumps", "groq", "scipy", "numpy",
-        "objc", "Quartz", "AppKit", "Foundation", "AVFoundation",
+        "objc", "Quartz", "AppKit", "Foundation",
         "httpcore", "httpx", "anyio", "sniffio", "certifi", "h11", "idna",
     ],
     "includes": [
-        "settings_window", "local_transcriber",
+        "settings_window", "local_transcriber", "history",
+    ],
+    "excludes": [
+        "torch", "transformers", "torchaudio", "torchvision",
+        "tensorflow", "keras", "sklearn", "matplotlib",
+        "PIL", "cv2", "pandas", "jupyter",
     ],
 }
 
