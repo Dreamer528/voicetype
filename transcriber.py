@@ -67,7 +67,7 @@ class Transcriber:
                 if attempt < max_attempts:
                     time.sleep(delay)
                     continue
-                raise RuntimeError("Empty response from Whisper API")
+                raise RuntimeError("Пустой ответ от Whisper API")
             except Exception as e:
                 last_error = e
                 error_msg = str(e).lower()
@@ -77,7 +77,7 @@ class Transcriber:
                         continue
                 raise
 
-        raise last_error or RuntimeError(f"Transcription failed after {max_attempts} attempts")
+        raise last_error or RuntimeError(f"Транскрипция не удалась после {max_attempts} попыток")
 
     @staticmethod
     def _basic_format(text):

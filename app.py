@@ -175,7 +175,7 @@ class VoiceTypeApp(rumps.App):
             try:
                 fn()
             except Exception as e:
-                log.error("Main-thread callback error: %s", e)
+                log.error("Ошибка в главном потоке: %s", e)
 
     def _run_on_main(self, fn):
         """Schedule fn to run on the main thread."""
@@ -204,21 +204,21 @@ class VoiceTypeApp(rumps.App):
                 model_name=self.config.get("local_whisper_model", "base"),
                 language=language,
             )
-            log.info("Using local transcriber (MLX-Whisper)")
+            log.info("Используется локальный транскрайбер (MLX-Whisper)")
             return True
         elif mode == "auto" and LocalTranscriber.is_available():
             self.transcriber = LocalTranscriber(
                 model_name=self.config.get("local_whisper_model", "base"),
                 language=language,
             )
-            log.info("Auto mode: using local transcriber")
+            log.info("Авто-режим: используется локальный транскрайбер")
             return True
 
         # Cloud mode (default)
         if not api_key:
             return False
         self.transcriber = self._cloud_transcriber
-        log.info("Using cloud transcriber (Groq)")
+        log.info("Используется облачный транскрайбер (Groq)")
         return True
 
 
@@ -297,7 +297,7 @@ class VoiceTypeApp(rumps.App):
         if time.time() - self._learn_start_time > 10.0:
             timer.stop()
             self.hotkey_manager.cancel_learning()
-            log.info("Learn mode timed out")
+            log.info("Таймаут выбора хоткея")
             self._set_state(IDLE)
             return
 
@@ -391,7 +391,7 @@ class VoiceTypeApp(rumps.App):
         pb = NSPasteboard.generalPasteboard()
         pb.clearContents()
         pb.setString_forType_(text, NSPasteboardTypeString)
-        log.info("History entry copied to clipboard")
+        log.info("Запись из истории скопирована в буфер")
 
     def _clear_history(self, _):
         clear_history()
@@ -542,7 +542,7 @@ class VoiceTypeApp(rumps.App):
             # Step 2: Format (always cloud — local LLMs don't handle Russian well)
             app_ctx = get_app_context()
             if app_ctx:
-                log.info("App context: %s", app_ctx)
+                log.info("Контекст приложения: %s", app_ctx)
 
             if self.config.get("format_with_llm", True) and hasattr(self.transcriber, 'format_text'):
                 text = self.transcriber.format_text(raw_text, app_context=app_ctx)
@@ -595,7 +595,7 @@ class VoiceTypeApp(rumps.App):
                     "Откройте Системные настройки → Конфиденциальность → Микрофон",
                 )
         except Exception as e:
-            log.warning("Could not check microphone permission: %s", e)
+            log.warning("Не удалось проверить разрешение микрофона: %s", e)
 
     def run(self, **kwargs):
         # Check Accessibility — opens settings page if not granted

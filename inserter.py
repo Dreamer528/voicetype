@@ -80,7 +80,7 @@ def insert_text(text):
     # Get frontmost app and send Cmd+V directly to it
     front_app = NSWorkspace.sharedWorkspace().frontmostApplication()
     if front_app is None:
-        log.warning("No frontmost application found, cannot paste")
+        log.warning("Нет активного приложения, невозможно вставить текст")
         return
     pid = front_app.processIdentifier()
     app_name = front_app.localizedName()

@@ -35,7 +35,7 @@ def save_history(entries):
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(entries, f, ensure_ascii=False, indent=1)
     except Exception as e:
-        log.error("Failed to save history: %s", e)
+        log.error("Не удалось сохранить историю: %s", e)
 
 
 def add_entry(text):

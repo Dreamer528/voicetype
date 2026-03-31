@@ -45,7 +45,7 @@ class AudioRecorder:
 
     def _callback(self, indata, frames, time_info, status):
         if status:
-            log.warning("Audio callback status: %s", status)
+            log.warning("Статус аудио-callback: %s", status)
         if not self._recording:
             return
         n = len(indata)
@@ -86,7 +86,7 @@ class AudioRecorder:
             except sd.PortAudioError as e:
                 self._recording = False
                 self._buffer = None
-                log.error("Microphone error: %s", e)
+                log.error("Ошибка микрофона: %s", e)
                 if self._on_error:
                     self._on_error(f"Ошибка микрофона: {e}")
 
@@ -101,7 +101,7 @@ class AudioRecorder:
                     self._stream.stop()
                     self._stream.close()
                 except Exception as e:
-                    log.warning("Error stopping stream: %s", e)
+                    log.warning("Ошибка при остановке записи: %s", e)
                 self._stream = None
 
         if self._buffer is None or self._write_pos == 0:

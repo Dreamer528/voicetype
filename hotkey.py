@@ -44,7 +44,7 @@ def _tap_callback(proxy, event_type, event, refcon):
     # macOS may disable the tap after inactivity — re-enable it
     if event_type in (Quartz.kCGEventTapDisabledByTimeout,
                       Quartz.kCGEventTapDisabledByUserInput):
-        log.warning("Event tap disabled (type=%s), re-enabling...", event_type)
+        log.warning("Event tap отключён (type=%s), перезапускаю...", event_type)
         Quartz.CGEventTapEnable(proxy, True)
         return event
 
@@ -55,7 +55,7 @@ def _tap_callback(proxy, event_type, event, refcon):
         if consumed:
             return None  # Swallow the event — don't pass to other apps
     except Exception as e:
-        log.error("Hotkey callback error: %s", e)
+        log.error("Ошибка обработки хоткея: %s", e)
     return event
 
 
@@ -122,12 +122,12 @@ class HotkeyManager:
         self._modifiers = hotkey_cfg.get("modifiers", 0)
         self._mod_mask = MOD_CMD | MOD_SHIFT | MOD_OPT | MOD_CTRL
         name = format_hotkey_name(hotkey_cfg)
-        log.info("Hotkey set: %s", name)
+        log.info("Хоткей установлен: %s", name)
 
     def start_learning(self):
         self._learned_result = None
         self._learn_mode = True
-        log.info("Learn mode: press any key...")
+        log.info("Режим выбора: нажмите любую клавишу...")
 
     def get_learned_result(self):
         result = self._learned_result
@@ -165,7 +165,7 @@ class HotkeyManager:
             if key_code == 53 and event_type == Quartz.kCGEventKeyDown:
                 if self.on_cancel:
                     self._active = False
-                    log.info(">>> RECORDING CANCEL (Esc)")
+                    log.info(">>> ЗАПИСЬ ОТМЕНЕНА (Esc)")
                     self.on_cancel()
                     return True
 
@@ -180,11 +180,11 @@ class HotkeyManager:
                     return True  # consume repeats too
                 if event_type == Quartz.kCGEventKeyDown and not self._active:
                     self._active = True
-                    log.info(">>> RECORDING START")
+                    log.info(">>> ЗАПИСЬ НАЧАТА")
                     self.on_activate()
                 elif event_type == Quartz.kCGEventKeyUp and self._active:
                     self._active = False
-                    log.info(">>> RECORDING STOP")
+                    log.info(">>> ЗАПИСЬ ОСТАНОВЛЕНА")
                     self.on_deactivate()
                 return True  # consume the hotkey event
 
@@ -214,11 +214,11 @@ class HotkeyManager:
             if self._source == "nx" and nx_key_id == self._nx_key_id:
                 if is_down and not self._active:
                     self._active = True
-                    log.info(">>> RECORDING START")
+                    log.info(">>> ЗАПИСЬ НАЧАТА")
                     self.on_activate()
                 elif not is_down and self._active:
                     self._active = False
-                    log.info(">>> RECORDING STOP")
+                    log.info(">>> ЗАПИСЬ ОСТАНОВЛЕНА")
                     self.on_deactivate()
                 return True
 
@@ -279,7 +279,7 @@ class HotkeyManager:
                 break
             # Safety check: re-enable tap if macOS disabled it
             if not Quartz.CGEventTapIsEnabled(tap):
-                log.warning("Event tap found disabled in run loop, re-enabling...")
+                log.warning("Event tap отключён в run loop, перезапускаю...")
                 Quartz.CGEventTapEnable(tap, True)
 
     def start(self):

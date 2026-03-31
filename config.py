@@ -96,7 +96,7 @@ def load_config():
             config = DEFAULT_CONFIG.copy()
             config.update(saved)
         except (json.JSONDecodeError, IOError) as e:
-            log.warning("Failed to load config: %s, using defaults", e)
+            log.warning("Не удалось загрузить конфиг: %s, используются настройки по умолчанию", e)
             config = DEFAULT_CONFIG.copy()
 
     # API key: prefer Keychain
@@ -113,7 +113,7 @@ def load_config():
     elif json_key:
         # Migrate JSON key to Keychain
         if set_keychain_key(json_key):
-            log.info("API key migrated to Keychain")
+            log.info("API ключ перенесён в Keychain")
             config_for_disk = config.copy()
             config_for_disk["groq_api_key"] = ""
             _save_config_to_disk(config_for_disk)

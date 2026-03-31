@@ -49,7 +49,7 @@ class LocalTranscriber:
         """Transcribe audio file using local MLX-Whisper model."""
         import mlx_whisper
 
-        log.info("Local transcription: model=%s, lang=%s", self._model_name, self.language)
+        log.info("Локальная транскрипция: модель=%s, язык=%s", self._model_name, self.language)
         result = mlx_whisper.transcribe(
             audio_path,
             path_or_hf_repo=self._model_path,
@@ -57,7 +57,7 @@ class LocalTranscriber:
         )
         text = result.get("text", "").strip()
         if not text:
-            raise RuntimeError("Empty transcription result from local model")
+            raise RuntimeError("Пустой результат транскрипции от локальной модели")
         return text
 
     def is_model_downloaded(self):
