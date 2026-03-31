@@ -399,11 +399,11 @@ class VoiceTypeApp(rumps.App):
     def _open_settings(self, _):
         """Open native settings window."""
         hotkey_name = format_hotkey_name(self.config.get("hotkey", DEFAULT_HOTKEY))
-        self._settings_controller = SettingsWindowController(
-            config=self.config,
-            on_save=self._on_settings_saved,
-            on_learn_hotkey=self._start_learning,
-            hotkey_name=hotkey_name,
+        self._settings_controller = SettingsWindowController.alloc().initWithConfig_onSave_onLearnHotkey_hotkeyName_(
+            self.config,
+            self._on_settings_saved,
+            self._start_learning,
+            hotkey_name,
         )
         self._settings_controller.show()
 
