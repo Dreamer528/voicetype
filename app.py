@@ -536,16 +536,19 @@ class VoiceTypeApp(rumps.App):
             raw_text = self.transcriber.transcribe(audio_path)
 
             # Step 2: Format (always cloud — local LLMs don't handle Russian well)
-            app_ctx = get_app_context()
-            if app_ctx:
-                log.info("Контекст приложения: %s", app_ctx)
-
-            if self.config.get("format_with_llm", True) and hasattr(self.transcriber, 'format_text'):
-                text = self.transcriber.format_text(raw_text, app_context=app_ctx)
-            elif self.config.get("format_with_llm", True) and self._cloud_transcriber:
-                text = self._cloud_transcriber.format_text(raw_text, app_context=app_ctx)
-            else:
-                text = raw_text
+            text = raw_text
+            if self.config.get("format_with_llm", True):
+                app_ctx = get_app_context()
+                if app_ctx:
+                    log.info("Контекст приложения: %s", app_ctx)
+                try:
+                    if hasattr(self.transcriber, 'format_text'):
+                        text = self.transcriber.format_text(raw_text, app_context=app_ctx)
+                    elif self._cloud_transcriber:
+                        text = self._cloud_transcriber.format_text(raw_text, app_context=app_ctx)
+                except Exception as fmt_err:
+                    log.warning("Форматирование не удалось, вставляю как есть: %s", fmt_err)
+                    text = raw_text
 
             log.info("Результат: %s", text[:100])
             insert_text(text)
