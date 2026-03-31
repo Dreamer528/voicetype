@@ -3,9 +3,12 @@
 Requires Accessibility permissions on macOS.
 """
 
+import logging
 import threading
 import Quartz
 from AppKit import NSEvent
+
+log = logging.getLogger("VoiceType")
 
 NX_SYSDEFINED = 14
 MEDIA_KEY_SUBTYPE = 8
@@ -38,6 +41,13 @@ _instance = None
 
 
 def _tap_callback(proxy, event_type, event, refcon):
+    # macOS may disable the tap after inactivity — re-enable it
+    if event_type in (Quartz.kCGEventTapDisabledByTimeout,
+                      Quartz.kCGEventTapDisabledByUserInput):
+        log.warning("Event tap disabled (type=%s), re-enabling...", event_type)
+        Quartz.CGEventTapEnable(proxy, True)
+        return event
+
     if _instance is None:
         return event
     try:
@@ -45,7 +55,7 @@ def _tap_callback(proxy, event_type, event, refcon):
         if consumed:
             return None  # Swallow the event — don't pass to other apps
     except Exception as e:
-        print(f"[VoiceType] hotkey error: {e}")
+        log.error("Hotkey callback error: %s", e)
     return event
 
 
@@ -93,9 +103,10 @@ DEFAULT_HOTKEY = {
 class HotkeyManager:
     """Configurable push-to-talk hotkey via Quartz CGEventTap."""
 
-    def __init__(self, on_activate, on_deactivate, hotkey_cfg=None):
+    def __init__(self, on_activate, on_deactivate, on_cancel=None, hotkey_cfg=None):
         self.on_activate = on_activate
         self.on_deactivate = on_deactivate
+        self.on_cancel = on_cancel
         self._active = False
         self._thread = None
         self._running = False
@@ -111,12 +122,12 @@ class HotkeyManager:
         self._modifiers = hotkey_cfg.get("modifiers", 0)
         self._mod_mask = MOD_CMD | MOD_SHIFT | MOD_OPT | MOD_CTRL
         name = format_hotkey_name(hotkey_cfg)
-        print(f"[VoiceType] Hotkey set: {name}")
+        log.info("Hotkey set: %s", name)
 
     def start_learning(self):
         self._learned_result = None
         self._learn_mode = True
-        print("[VoiceType] Learn mode: press any key...")
+        log.info("Learn mode: press any key...")
 
     def get_learned_result(self):
         result = self._learned_result
@@ -150,6 +161,14 @@ class HotkeyManager:
                 }
                 return True  # consume
 
+            # Esc key cancels recording
+            if key_code == 53 and event_type == Quartz.kCGEventKeyDown:
+                if self.on_cancel:
+                    self._active = False
+                    log.info(">>> RECORDING CANCEL (Esc)")
+                    self.on_cancel()
+                    return True
+
             # Normal mode — check match
             if self._source == "key" and key_code == self._key_code:
                 if flags != self._modifiers:
@@ -161,11 +180,11 @@ class HotkeyManager:
                     return True  # consume repeats too
                 if event_type == Quartz.kCGEventKeyDown and not self._active:
                     self._active = True
-                    print("[VoiceType] >>> RECORDING START")
+                    log.info(">>> RECORDING START")
                     self.on_activate()
                 elif event_type == Quartz.kCGEventKeyUp and self._active:
                     self._active = False
-                    print("[VoiceType] >>> RECORDING STOP")
+                    log.info(">>> RECORDING STOP")
                     self.on_deactivate()
                 return True  # consume the hotkey event
 
@@ -180,7 +199,7 @@ class HotkeyManager:
             is_down = (nx_flags & 0x01) == 0
             action = "DOWN" if is_down else "UP"
             name = NX_KEY_NAMES.get(nx_key_id, f"NX({nx_key_id})")
-            print(f"[VoiceType] Media {action}: {name}")
+            log.info("Media %s: %s", action, name)
 
             if self._learn_mode and is_down:
                 self._learn_mode = False
@@ -195,11 +214,11 @@ class HotkeyManager:
             if self._source == "nx" and nx_key_id == self._nx_key_id:
                 if is_down and not self._active:
                     self._active = True
-                    print("[VoiceType] >>> RECORDING START")
+                    log.info(">>> RECORDING START")
                     self.on_activate()
                 elif not is_down and self._active:
                     self._active = False
-                    print("[VoiceType] >>> RECORDING STOP")
+                    log.info(">>> RECORDING STOP")
                     self.on_deactivate()
                 return True
 
@@ -222,9 +241,8 @@ class HotkeyManager:
         )
 
         if tap is None:
-            print("[VoiceType] ОШИБКА: event tap не создан! Открываю настройки...")
+            log.error("Event tap не создан — нет разрешений")
             import subprocess
-            # Open both Accessibility and Input Monitoring settings
             subprocess.run([
                 "open",
                 "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
@@ -244,7 +262,7 @@ class HotkeyManager:
                 pass
             return
 
-        print("[VoiceType] Event tap создан, слушаю клавиши...")
+        log.info("Event tap создан, слушаю клавиши...")
 
         source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
         Quartz.CFRunLoopAddSource(
@@ -259,6 +277,10 @@ class HotkeyManager:
             )
             if result == Quartz.kCFRunLoopRunFinished:
                 break
+            # Safety check: re-enable tap if macOS disabled it
+            if not Quartz.CGEventTapIsEnabled(tap):
+                log.warning("Event tap found disabled in run loop, re-enabling...")
+                Quartz.CGEventTapEnable(tap, True)
 
     def start(self):
         global _instance

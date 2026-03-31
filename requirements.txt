@@ -3,4 +3,14 @@ sounddevice>=0.4.6
 scipy>=1.11.0
 numpy>=1.24.0
 groq>=0.4.0
+httpx>=0.24.0
+pyobjc-core>=9.0
 pyobjc-framework-Quartz>=9.0
+pyobjc-framework-AppKit>=9.0
+pyobjc-framework-Foundation>=9.0
+pyobjc-framework-AVFoundation>=9.0
+
+# Optional: Local AI (Apple Silicon only)
+# pip install mlx-whisper mlx-lm
+# mlx-whisper>=0.4.0
+# mlx-lm>=0.4.0

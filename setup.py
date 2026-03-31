@@ -43,8 +43,11 @@ OPTIONS = {
     },
     "packages": [
         "rumps", "groq", "scipy", "numpy",
-        "objc", "Quartz", "AppKit",
+        "objc", "Quartz", "AppKit", "Foundation", "AVFoundation",
         "httpcore", "httpx", "anyio", "sniffio", "certifi", "h11", "idna",
+    ],
+    "includes": [
+        "settings_window", "local_transcriber",
     ],
 }
 

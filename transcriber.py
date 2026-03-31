@@ -1,12 +1,17 @@
 import time
 import os
+import httpx
 from groq import Groq
 
 
 class Transcriber:
     def __init__(self, api_key, base_url, language="ru", model="whisper-large-v3",
                  llm_model="llama-3.3-70b-versatile"):
-        self.client = Groq(api_key=api_key, base_url=base_url)
+        self.client = Groq(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=httpx.Timeout(10.0, connect=5.0),
+        )
         self.language = language
         self.model = model
         self.llm_model = llm_model
@@ -43,11 +48,22 @@ class Transcriber:
 
         raise last_error or RuntimeError(f"Transcription failed after {max_attempts} attempts")
 
+    @staticmethod
+    def _basic_format(text):
+        """Basic formatting for short texts: capitalize + punctuate."""
+        text = text.strip()
+        if not text:
+            return text
+        text = text[0].upper() + text[1:]
+        if text[-1] not in '.!?':
+            text += '.'
+        return text
+
     def format_text(self, raw_text):
         """Format raw transcription with LLM: paragraphs, punctuation, typo fixes."""
-        # Short texts don't need LLM formatting
-        if len(raw_text.split()) < 5:
-            return raw_text
+        # Short texts: basic formatting only (no LLM call needed)
+        if len(raw_text.split()) < 10:
+            return self._basic_format(raw_text)
 
         response = self.client.chat.completions.create(
             model=self.llm_model,

@@ -1,8 +1,11 @@
 import ctypes
+import logging
 import subprocess
 import time
 import Quartz
 from AppKit import NSPasteboard, NSPasteboardTypeString, NSWorkspace
+
+log = logging.getLogger("VoiceType")
 
 V_KEYCODE = 9  # macOS virtual keycode for 'V'
 
@@ -17,7 +20,6 @@ def check_accessibility():
         trusted = lib.AXIsProcessTrusted()
 
         if not trusted:
-            # Open the right settings page automatically
             subprocess.run([
                 "open",
                 "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
@@ -28,9 +30,16 @@ def check_accessibility():
 
 
 def insert_text(text):
-    """Insert text into the frontmost application via clipboard + Cmd+V."""
-    # Copy to clipboard via native macOS API (handles Unicode correctly)
+    """Insert text into the frontmost application via clipboard + Cmd+V.
+
+    Saves and restores the original clipboard contents.
+    """
     pb = NSPasteboard.generalPasteboard()
+
+    # Save original clipboard content
+    original_content = pb.stringForType_(NSPasteboardTypeString)
+
+    # Copy transcribed text to clipboard
     pb.clearContents()
     pb.setString_forType_(text, NSPasteboardTypeString)
 
@@ -40,7 +49,7 @@ def insert_text(text):
     front_app = NSWorkspace.sharedWorkspace().frontmostApplication()
     pid = front_app.processIdentifier()
     app_name = front_app.localizedName()
-    print(f"[VoiceType] Вставляю в: {app_name} (PID: {pid})")
+    log.info("Вставляю в: %s (PID: %s)", app_name, pid)
 
     source = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStatePrivate)
 
@@ -55,3 +64,9 @@ def insert_text(text):
     key_up = Quartz.CGEventCreateKeyboardEvent(source, V_KEYCODE, False)
     Quartz.CGEventSetFlags(key_up, Quartz.kCGEventFlagMaskCommand)
     Quartz.CGEventPostToPid(pid, key_up)
+
+    # Wait for paste to complete, then restore original clipboard
+    time.sleep(0.15)
+    if original_content is not None:
+        pb.clearContents()
+        pb.setString_forType_(original_content, NSPasteboardTypeString)
