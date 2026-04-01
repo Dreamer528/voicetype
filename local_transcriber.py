@@ -55,6 +55,8 @@ def _find_system_python():
             # Clean env: remove py2app bundle paths so system Python uses its own packages
             clean_env = {k: v for k, v in os.environ.items()
                          if k not in ("PYTHONPATH", "PYTHONHOME", "RESOURCEPATH")}
+            clean_env["LANG"] = "en_US.UTF-8"
+            clean_env["PYTHONIOENCODING"] = "utf-8"
             result = subprocess.run(
                 [py, "-c", "import mlx_whisper; print('ok')"],
                 capture_output=True, text=True, timeout=30, env=clean_env,
@@ -129,6 +131,8 @@ class LocalTranscriber:
         try:
             clean_env = {k: v for k, v in os.environ.items()
                          if k not in ("PYTHONPATH", "PYTHONHOME", "RESOURCEPATH")}
+            clean_env["LANG"] = "en_US.UTF-8"
+            clean_env["PYTHONIOENCODING"] = "utf-8"
             result = subprocess.run(
                 [_system_python, "-c", _TRANSCRIBE_SCRIPT,
                  audio_path, self._model_path, self.language],
