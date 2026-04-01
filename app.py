@@ -86,6 +86,7 @@ class VoiceTypeApp(rumps.App):
         self.transcriber = None
         self._cloud_transcriber = None  # kept for LLM formatting when using local whisper
         self.hotkey_manager = None
+        self._busy = False  # prevents overlapping activate/deactivate cycles
 
         # Thread-safe queue for dispatching work to the main thread.
         # AppKit/rumps UI must only be touched from the main thread;
@@ -469,13 +470,14 @@ class VoiceTypeApp(rumps.App):
 
     def _do_activate(self):
         """Actual activation logic, runs on main thread."""
-        if self.state == LEARNING:
+        if self._busy or self.state == LEARNING:
             return
 
         # Safety: if stuck in PROCESSING for too long, force reset
         if self.state == PROCESSING:
             if hasattr(self, '_processing_start') and time.time() - self._processing_start > 120:
                 log.warning("Принудительный сброс: застрял в PROCESSING > 2 мин")
+                self._busy = False
                 self._set_state(IDLE)
             else:
                 return
@@ -555,6 +557,7 @@ class VoiceTypeApp(rumps.App):
             self._set_state(IDLE)
             return
         log.info("Аудио сохранено: %s (%.1fs)", audio_path, duration)
+        self._busy = True
         self._processing_start = time.time()
         self._set_state(PROCESSING)
         thread = threading.Thread(
@@ -609,7 +612,10 @@ class VoiceTypeApp(rumps.App):
                 self.transcriber.cleanup(audio_path)
             else:
                 AudioRecorder.cleanup_file(audio_path)
-            self._run_on_main(lambda: self._set_state(IDLE))
+            def _reset():
+                self._busy = False
+                self._set_state(IDLE)
+            self._run_on_main(_reset)
 
     # --- Lifecycle ---
 
