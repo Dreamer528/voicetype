@@ -532,6 +532,7 @@ class VoiceTypeApp(rumps.App):
             if audio_path:
                 self.recorder.cleanup_file(audio_path)
             log.info("Запись отменена (Esc)")
+            self._busy = False
             self._set_state(IDLE)
         elif self.state == LEARNING:
             if hasattr(self, '_learn_timer') and self._learn_timer:
@@ -543,17 +544,20 @@ class VoiceTypeApp(rumps.App):
         """Stop recording and start transcription."""
         if not self.recorder.is_recording() and self.state != RECORDING:
             log.warning("_stop_and_process вызван но запись не активна (state=%s)", self.state)
+            self._busy = False
             self._set_state(IDLE)
             return
         duration = self.recorder.get_duration()
         audio_path = self.recorder.stop_recording()
         if not audio_path:
             log.info("Нет аудио данных")
+            self._busy = False
             self._set_state(IDLE)
             return
         if duration < MIN_RECORDING_SECONDS:
             log.info("Запись слишком короткая (%.2fs), пропускаю", duration)
             self.recorder.cleanup_file(audio_path)
+            self._busy = False
             self._set_state(IDLE)
             return
         log.info("Аудио сохранено: %s (%.1fs)", audio_path, duration)
