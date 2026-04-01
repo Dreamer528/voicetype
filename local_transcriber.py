@@ -136,11 +136,13 @@ class LocalTranscriber:
             result = subprocess.run(
                 [_system_python, "-c", _TRANSCRIBE_SCRIPT,
                  audio_path, self._model_path, self.language],
-                capture_output=True, text=True, timeout=120, env=clean_env,
+                capture_output=True, timeout=120, env=clean_env,
             )
+            stdout = result.stdout.decode("utf-8", errors="replace")
+            stderr = result.stderr.decode("utf-8", errors="replace")
             if result.returncode != 0:
-                raise RuntimeError(f"Ошибка транскрипции: {result.stderr[:200]}")
-            data = json.loads(result.stdout.strip())
+                raise RuntimeError(f"Ошибка транскрипции: {stderr[:200]}")
+            data = json.loads(stdout.strip())
             text = data.get("text", "").strip()
             if not text:
                 raise RuntimeError("Пустой результат транскрипции от локальной модели")
