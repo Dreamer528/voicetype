@@ -5,8 +5,10 @@ from setuptools import setup
 # py2app hits recursion limit on large dependency trees (torch, transformers)
 sys.setrecursionlimit(10000)
 
-# Find libportaudio.dylib from installed _sounddevice_data
+# Find native libraries that py2app can't discover automatically
 frameworks = []
+
+# PortAudio for sounddevice
 try:
     import _sounddevice_data
     pa_path = os.path.join(
@@ -15,10 +17,9 @@ try:
     if os.path.exists(pa_path):
         frameworks.append(pa_path)
         print(f"Found PortAudio: {pa_path}")
-    else:
-        print(f"WARNING: libportaudio.dylib not found at {pa_path}")
 except ImportError:
-    print("WARNING: _sounddevice_data not installed, PortAudio won't be bundled")
+    print("WARNING: _sounddevice_data not installed")
+
 
 APP = ["app.py"]
 DATA_FILES = [

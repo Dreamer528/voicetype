@@ -200,14 +200,18 @@ class VoiceTypeApp(rumps.App):
                 llm_model=self.config.get("llm_model", "llama-3.3-70b-versatile"),
             )
 
-        if mode == "local" and LocalTranscriber.is_available():
+        local_ok = LocalTranscriber.is_available()
+        if mode in ("local", "auto") and not local_ok:
+            log.warning("Локальный режим запрошен, но MLX-Whisper недоступен — fallback на облако")
+
+        if mode == "local" and local_ok:
             self.transcriber = LocalTranscriber(
                 model_name=self.config.get("local_whisper_model", "base"),
                 language=language,
             )
             log.info("Используется локальный транскрайбер (MLX-Whisper)")
             return True
-        elif mode == "auto" and LocalTranscriber.is_available():
+        elif mode == "auto" and local_ok:
             self.transcriber = LocalTranscriber(
                 model_name=self.config.get("local_whisper_model", "base"),
                 language=language,
