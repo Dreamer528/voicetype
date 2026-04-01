@@ -52,9 +52,12 @@ def _find_system_python():
         if not py or not os.path.exists(py):
             continue
         try:
+            # Clean env: remove py2app bundle paths so system Python uses its own packages
+            clean_env = {k: v for k, v in os.environ.items()
+                         if k not in ("PYTHONPATH", "PYTHONHOME", "RESOURCEPATH")}
             result = subprocess.run(
                 [py, "-c", "import mlx_whisper; print('ok')"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, timeout=30, env=clean_env,
             )
             if result.returncode == 0 and "ok" in result.stdout:
                 log.info("Системный Python с MLX-Whisper: %s", py)
@@ -124,10 +127,12 @@ class LocalTranscriber:
             raise RuntimeError("Системный Python с mlx-whisper не найден")
 
         try:
+            clean_env = {k: v for k, v in os.environ.items()
+                         if k not in ("PYTHONPATH", "PYTHONHOME", "RESOURCEPATH")}
             result = subprocess.run(
                 [_system_python, "-c", _TRANSCRIBE_SCRIPT,
                  audio_path, self._model_path, self.language],
-                capture_output=True, text=True, timeout=120,
+                capture_output=True, text=True, timeout=120, env=clean_env,
             )
             if result.returncode != 0:
                 raise RuntimeError(f"Ошибка транскрипции: {result.stderr[:200]}")
