@@ -370,7 +370,7 @@ class RecordingOverlay:
     def __init__(self):
         screen = NSScreen.mainScreen().frame()
 
-        # Restore saved position or center-bottom
+        # Restore saved position or center-bottom; clamp to visible screen area
         defaults = NSUserDefaults.standardUserDefaults()
         saved = defaults.dictionaryForKey_(_POS_KEY)
         if saved and "x" in saved and "y" in saved:
@@ -379,6 +379,10 @@ class RecordingOverlay:
         else:
             x = (screen.size.width - WINDOW_W) / 2
             y = 80
+
+        # Ensure window stays fully on screen (handles off-screen saved positions)
+        x = max(0, min(x, screen.size.width - WINDOW_W))
+        y = max(0, min(y, screen.size.height - WINDOW_H))
 
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             ((x, y), (WINDOW_W, WINDOW_H)),

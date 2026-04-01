@@ -12,6 +12,13 @@ import sys
 import threading
 import time
 
+# In .app bundle, __boot__.py removes RESOURCEPATH from sys.path so that
+# python39.zip takes priority. We put RESOURCEPATH back at front so our
+# patched .py files in Resources/ override the old compiled .pyc in the zip.
+_rp = os.environ.get("RESOURCEPATH", "")
+if _rp and _rp not in sys.path:
+    sys.path.insert(0, _rp)
+
 # Fix encoding for .app bundle (no terminal = defaults to ASCII)
 os.environ.setdefault("LANG", "en_US.UTF-8")
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
