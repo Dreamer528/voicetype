@@ -502,6 +502,8 @@ class VoiceTypeApp(rumps.App):
                 return
             self._set_state(RECORDING)
             self.recorder.start_recording()
+            if hasattr(self.transcriber, 'preload'):
+                self.transcriber.preload()
             if self.hotkey_manager:
                 self.hotkey_manager._active = True
         else:
@@ -513,6 +515,8 @@ class VoiceTypeApp(rumps.App):
                 return
             self._set_state(RECORDING)
             self.recorder.start_recording()
+            if hasattr(self.transcriber, 'preload'):
+                self.transcriber.preload()
 
     def _on_deactivate(self):
         """Hotkey released (called from CGEventTap thread)."""
@@ -630,6 +634,8 @@ class VoiceTypeApp(rumps.App):
     def _quit(self, _):
         if self.hotkey_manager:
             self.hotkey_manager.stop()
+        if hasattr(self.transcriber, 'shutdown'):
+            self.transcriber.shutdown()
         rumps.quit_application()
 
     @staticmethod
