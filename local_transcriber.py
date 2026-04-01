@@ -159,15 +159,18 @@ class LocalTranscriber:
         global _system_python
         if platform.machine() != "arm64":
             return False
+        # Always find system python for the worker subprocess
+        # (bundled python can't run mlx reliably)
+        _system_python = _find_system_python()
+        if _system_python:
+            return True
+        # Last resort: try direct import
         try:
             import mlx_whisper
             _system_python = sys.executable
             return True
         except Exception:
             pass
-        _system_python = _find_system_python()
-        if _system_python:
-            return True
         log.warning("MLX-Whisper не найден ни в бандле, ни в системном Python")
         return False
 
