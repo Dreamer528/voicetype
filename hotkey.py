@@ -161,13 +161,14 @@ class HotkeyManager:
                 }
                 return True  # consume
 
-            # Esc key cancels recording
+            # Esc key cancels recording (only during active recording)
             if key_code == 53 and event_type == Quartz.kCGEventKeyDown:
-                if self.on_cancel:
+                if self._active and self.on_cancel:
                     self._active = False
                     log.info(">>> ЗАПИСЬ ОТМЕНЕНА (Esc)")
                     self.on_cancel()
-                    return True
+                    return True  # consume Esc only when cancelling
+                return False  # always pass Esc through to other apps
 
             # Normal mode — check match
             if self._source == "key" and key_code == self._key_code:

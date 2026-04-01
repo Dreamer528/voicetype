@@ -472,11 +472,21 @@ class VoiceTypeApp(rumps.App):
         if self.state == LEARNING:
             return
 
+        # Safety: if stuck in PROCESSING for too long, force reset
+        if self.state == PROCESSING:
+            if hasattr(self, '_processing_start') and time.time() - self._processing_start > 120:
+                log.warning("Принудительный сброс: застрял в PROCESSING > 2 мин")
+                self._set_state(IDLE)
+            else:
+                return
+
         mode = self.config.get("mode", "push_to_talk")
 
         if mode == "toggle":
             if self.state == RECORDING:
                 self._stop_and_process()
+                if self.hotkey_manager:
+                    self.hotkey_manager._active = False
                 return
             elif self.state == PROCESSING:
                 return
@@ -486,6 +496,8 @@ class VoiceTypeApp(rumps.App):
                 return
             self._set_state(RECORDING)
             self.recorder.start_recording()
+            if self.hotkey_manager:
+                self.hotkey_manager._active = True
         else:
             if self.state != IDLE:
                 return
@@ -503,8 +515,9 @@ class VoiceTypeApp(rumps.App):
     def _do_deactivate(self):
         """Actual deactivation logic, runs on main thread."""
         mode = self.config.get("mode", "push_to_talk")
-        if mode == "push_to_talk" and self.state == RECORDING:
-            self._stop_and_process()
+        if mode == "push_to_talk":
+            if self.state == RECORDING or self.recorder.is_recording():
+                self._stop_and_process()
 
     def _on_cancel(self):
         """Esc pressed (called from CGEventTap thread)."""
@@ -526,6 +539,10 @@ class VoiceTypeApp(rumps.App):
 
     def _stop_and_process(self):
         """Stop recording and start transcription."""
+        if not self.recorder.is_recording() and self.state != RECORDING:
+            log.warning("_stop_and_process вызван но запись не активна (state=%s)", self.state)
+            self._set_state(IDLE)
+            return
         duration = self.recorder.get_duration()
         audio_path = self.recorder.stop_recording()
         if not audio_path:
@@ -538,6 +555,7 @@ class VoiceTypeApp(rumps.App):
             self._set_state(IDLE)
             return
         log.info("Аудио сохранено: %s (%.1fs)", audio_path, duration)
+        self._processing_start = time.time()
         self._set_state(PROCESSING)
         thread = threading.Thread(
             target=self._process_audio,
