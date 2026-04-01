@@ -249,22 +249,7 @@ class LocalTranscriber:
         log.info("Локальная транскрипция: модель=%s, язык=%s",
                  self._model_name, self.language)
 
-        # Try direct import first (fastest, works in script mode)
-        try:
-            import mlx_whisper
-            result = mlx_whisper.transcribe(
-                audio_path,
-                path_or_hf_repo=self._model_path,
-                language=self.language,
-            )
-            text = result.get("text", "").strip()
-            if not text:
-                raise RuntimeError("Пустой результат транскрипции")
-            return text
-        except ImportError:
-            pass
-
-        # Use persistent worker (for .app bundle)
+        # Always use persistent worker (model stays loaded between calls)
         resp = self._send_command({
             "action": "transcribe",
             "audio_path": audio_path,
