@@ -29,13 +29,15 @@ WHISPER_SIZES = {
 
 # Script that runs in system Python to do actual transcription
 _TRANSCRIBE_SCRIPT = '''
-import sys, json
+import warnings, os, sys, json
+warnings.filterwarnings("ignore")
+os.environ["PYTHONWARNINGS"] = "ignore"
 audio_path = sys.argv[1]
 model_path = sys.argv[2]
 language = sys.argv[3]
 import mlx_whisper
 result = mlx_whisper.transcribe(audio_path, path_or_hf_repo=model_path, language=language)
-print(json.dumps({"text": result.get("text", "")}))
+print(json.dumps({"text": result.get("text", "")}, ensure_ascii=False))
 '''
 
 
@@ -57,6 +59,7 @@ def _find_system_python():
                          if k not in ("PYTHONPATH", "PYTHONHOME", "RESOURCEPATH")}
             clean_env["LANG"] = "en_US.UTF-8"
             clean_env["PYTHONIOENCODING"] = "utf-8"
+            clean_env["PYTHONWARNINGS"] = "ignore"
             result = subprocess.run(
                 [py, "-c", "import mlx_whisper; print('ok')"],
                 capture_output=True, text=True, timeout=30, env=clean_env,
@@ -133,6 +136,7 @@ class LocalTranscriber:
                          if k not in ("PYTHONPATH", "PYTHONHOME", "RESOURCEPATH")}
             clean_env["LANG"] = "en_US.UTF-8"
             clean_env["PYTHONIOENCODING"] = "utf-8"
+            clean_env["PYTHONWARNINGS"] = "ignore"
             result = subprocess.run(
                 [_system_python, "-c", _TRANSCRIBE_SCRIPT,
                  audio_path, self._model_path, self.language],
@@ -142,7 +146,11 @@ class LocalTranscriber:
             stderr = result.stderr.decode("utf-8", errors="replace")
             if result.returncode != 0:
                 raise RuntimeError(f"Ошибка транскрипции: {stderr[:200]}")
-            data = json.loads(stdout.strip())
+            # Find JSON in stdout (may have warnings before it)
+            json_start = stdout.find("{")
+            if json_start < 0:
+                raise RuntimeError(f"Нет JSON в ответе: {stdout[:200]}")
+            data = json.loads(stdout[json_start:])
             text = data.get("text", "").strip()
             if not text:
                 raise RuntimeError("Пустой результат транскрипции от локальной модели")
