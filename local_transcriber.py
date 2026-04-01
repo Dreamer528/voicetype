@@ -39,21 +39,20 @@ WHISPER_SIZES = {
 IDLE_TIMEOUT = 300
 
 # Worker script: runs in system Python, reads JSON commands from stdin
-_WORKER_SCRIPT = '''
+_WORKER_SCRIPT = r'''
 import warnings, os, sys, json, time
 warnings.filterwarnings("ignore")
 os.environ["PYTHONWARNINGS"] = "ignore"
 
-IDLE_TIMEOUT = {idle_timeout}
+IDLE_TIMEOUT = __IDLE_TIMEOUT__
 model_path = sys.argv[1]
-model = None
+_loaded = False
 
 def ensure_model():
-    global model
-    if model is not None:
+    global _loaded
+    if _loaded:
         return
     import mlx_whisper
-    # Warm up: transcribe silence to force model load + Metal compile
     import tempfile, numpy as np
     from scipy.io import wavfile
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
@@ -61,47 +60,44 @@ def ensure_model():
     tmp.close()
     mlx_whisper.transcribe(tmp.name, path_or_hf_repo=model_path)
     os.unlink(tmp.name)
-    model = model_path  # mark as loaded
+    _loaded = True
 
-def transcribe(audio_path, language):
+def do_transcribe(audio_path, language):
     ensure_model()
     import mlx_whisper
     result = mlx_whisper.transcribe(audio_path, path_or_hf_repo=model_path, language=language)
     return result.get("text", "")
 
-# Signal ready
-sys.stdout.write(json.dumps({{"status": "ready"}}) + "\\n")
-sys.stdout.flush()
+def respond(obj):
+    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+respond({"status": "ready"})
 
 import select
 last_activity = time.time()
 
 while True:
-    # Check for input with 1-second timeout
     ready, _, _ = select.select([sys.stdin], [], [], 1.0)
     if ready:
         line = sys.stdin.readline()
         if not line:
-            break  # stdin closed
+            break
         try:
             cmd = json.loads(line.strip())
             action = cmd.get("action")
             if action == "preload":
                 ensure_model()
-                sys.stdout.write(json.dumps({{"status": "loaded"}}) + "\\n")
-                sys.stdout.flush()
+                respond({"status": "loaded"})
             elif action == "transcribe":
-                text = transcribe(cmd["audio_path"], cmd.get("language", "ru"))
-                sys.stdout.write(json.dumps({{"status": "ok", "text": text}}, ensure_ascii=False) + "\\n")
-                sys.stdout.flush()
+                text = do_transcribe(cmd["audio_path"], cmd.get("language", "ru"))
+                respond({"status": "ok", "text": text})
             elif action == "quit":
                 break
             last_activity = time.time()
         except Exception as e:
-            sys.stdout.write(json.dumps({{"status": "error", "error": str(e)}}) + "\\n")
-            sys.stdout.flush()
+            respond({"status": "error", "error": str(e)})
     else:
-        # Check idle timeout
         if time.time() - last_activity > IDLE_TIMEOUT:
             break
 '''
@@ -192,7 +188,7 @@ class LocalTranscriber:
         if not py:
             return False
 
-        script = _WORKER_SCRIPT.format(idle_timeout=IDLE_TIMEOUT)
+        script = _WORKER_SCRIPT.replace("__IDLE_TIMEOUT__", str(IDLE_TIMEOUT))
         try:
             self._worker = subprocess.Popen(
                 [py, "-c", script, self._model_path],
