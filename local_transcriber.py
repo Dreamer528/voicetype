@@ -27,10 +27,12 @@ WHISPER_MODELS = {
     "small": "mlx-community/whisper-small-mlx",
     "medium": "mlx-community/whisper-medium-mlx",
     "large-v3": "mlx-community/whisper-large-v3-mlx",
+    "turbo": "mlx-community/whisper-large-v3-turbo",
 }
 
 WHISPER_SIZES = {
     "tiny": 75, "base": 140, "small": 460, "medium": 1500, "large-v3": 3000,
+    "turbo": 800,
 }
 
 # Worker auto-shutdown after 5 minutes of no requests
