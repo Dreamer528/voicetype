@@ -629,40 +629,80 @@ class VoiceTypeApp(rumps.App):
                     self._set_state(IDLE)
             self._run_on_main(_reset)
 
+    # Free models ranked by quality/speed (auto-rotation on rate limit)
+    _QA_MODELS = [
+        "nvidia/nemotron-3-super-120b-a12b:free",   # 120B, fast, excellent
+        "qwen/qwen3.6-plus:free",                   # great quality, slower
+        "nvidia/nemotron-3-nano-30b-a3b:free",       # 30B, very fast
+        "meta-llama/llama-3.3-70b-instruct:free",   # good fallback
+        "z-ai/glm-4.5-air:free",                    # decent, slow
+        "arcee-ai/trinity-large-preview:free",       # backup
+        "stepfun/step-3.5-flash:free",              # backup
+    ]
+
     def _ask_openrouter(self, question):
-        """Send question to OpenRouter and return answer text."""
+        """Send question to OpenRouter with automatic model rotation."""
+        import httpx
         api_key = self.config.get("openrouter_api_key", "")
         if not api_key:
             raise RuntimeError("OpenRouter API ключ не задан (настройки)")
-        model = self.config.get("qa_model", "qwen/qwen3.6-plus:free")
         lang = self.config.get("language", "ru")
         system_msg = (
             "Ты краткий и полезный AI-ассистент. "
             "Отвечай чётко и по делу. "
             f"Отвечай на {'русском' if lang == 'ru' else 'английском'} языке."
         )
+        messages = [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": question},
+        ]
 
-        import httpx
-        resp = httpx.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": question},
-                ],
-                "max_tokens": 1000,
-            },
-            timeout=30,
-        )
-        if resp.status_code != 200:
-            raise RuntimeError(f"OpenRouter: {resp.status_code} — {resp.text[:200]}")
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        # Try preferred model first, then rotate through fallbacks
+        preferred = self.config.get("qa_model", self._QA_MODELS[0])
+        models_to_try = [preferred] + [m for m in self._QA_MODELS if m != preferred]
+
+        last_error = None
+        for model in models_to_try:
+            try:
+                resp = httpx.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "messages": messages,
+                        "max_tokens": 1000,
+                    },
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    answer = data["choices"][0]["message"]["content"]
+                    if model != preferred:
+                        log.info("QA: использована запасная модель %s", model)
+                    return answer
+                elif resp.status_code in (429, 503):
+                    log.warning("QA: %s → %s, пробую следующую", model, resp.status_code)
+                    last_error = f"{model}: HTTP {resp.status_code}"
+                    continue
+                elif resp.status_code == 404:
+                    log.warning("QA: %s недоступна (404), пробую следующую", model)
+                    last_error = f"{model}: недоступна"
+                    continue
+                else:
+                    last_error = f"{model}: HTTP {resp.status_code}"
+                    continue
+            except httpx.TimeoutException:
+                log.warning("QA: %s таймаут, пробую следующую", model)
+                last_error = f"{model}: таймаут"
+                continue
+            except Exception as e:
+                last_error = f"{model}: {e}"
+                continue
+
+        raise RuntimeError(f"Все модели недоступны. Последняя ошибка: {last_error}")
 
     # --- Dictation processing ---
 

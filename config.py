@@ -31,7 +31,7 @@ DEFAULT_CONFIG = {
     "transcription_mode": "cloud",          # cloud | local | auto
     "local_whisper_model": "base",          # tiny | base | small | medium | large-v3
     "openrouter_api_key": "",
-    "qa_model": "qwen/qwen3.6-plus:free",
+    "qa_model": "nvidia/nemotron-3-super-120b-a12b:free",
 }
 
 
