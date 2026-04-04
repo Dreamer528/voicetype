@@ -54,7 +54,7 @@ OPTIONS = {
         "httpcore", "httpx", "anyio", "sniffio", "certifi", "h11", "idna",
     ],
     "includes": [
-        "settings_window", "local_transcriber", "history", "answer_window",
+        "settings_window", "local_transcriber", "history", "answer_window", "agent",
     ],
     "excludes": [
         "torch", "transformers", "torchaudio", "torchvision",

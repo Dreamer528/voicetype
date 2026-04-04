@@ -104,14 +104,18 @@ class HotkeyManager:
     """Configurable push-to-talk hotkey via Quartz CGEventTap."""
 
     def __init__(self, on_activate, on_deactivate, on_cancel=None, hotkey_cfg=None,
-                 on_qa_activate=None, on_qa_deactivate=None):
+                 on_qa_activate=None, on_qa_deactivate=None,
+                 on_agent_activate=None, on_agent_deactivate=None):
         self.on_activate = on_activate
         self.on_deactivate = on_deactivate
         self.on_cancel = on_cancel
         self.on_qa_activate = on_qa_activate
         self.on_qa_deactivate = on_qa_deactivate
+        self.on_agent_activate = on_agent_activate
+        self.on_agent_deactivate = on_agent_deactivate
         self._active = False
         self._qa_active = False
+        self._agent_active = False
         self._thread = None
         self._running = False
         self._learn_mode = False
@@ -177,11 +181,35 @@ class HotkeyManager:
                     log.info(">>> QA ЗАПИСЬ ОТМЕНЕНА (Esc)")
                     self.on_cancel()
                     return True
+                if self._agent_active and self.on_cancel:
+                    self._agent_active = False
+                    log.info(">>> AGENT ЗАПИСЬ ОТМЕНЕНА (Esc)")
+                    self.on_cancel()
+                    return True
                 # Also try cancel for answer window dismissal
                 if self.on_cancel:
                     self.on_cancel()
                     # Don't consume — let Esc pass to other apps too
                 return False
+
+            # Agent mode: same key + Cmd added (e.g. Opt+Cmd+Space)
+            if self._source == "key" and key_code == self._key_code and self.on_agent_activate:
+                agent_mods = self._modifiers | MOD_CMD
+                if flags == agent_mods:
+                    is_repeat = Quartz.CGEventGetIntegerValueField(
+                        event, Quartz.kCGKeyboardEventAutorepeat
+                    )
+                    if is_repeat:
+                        return True
+                    if event_type == Quartz.kCGEventKeyDown and not self._agent_active:
+                        self._agent_active = True
+                        log.info(">>> AGENT ЗАПИСЬ НАЧАТА")
+                        self.on_agent_activate()
+                    elif event_type == Quartz.kCGEventKeyUp and self._agent_active:
+                        self._agent_active = False
+                        log.info(">>> AGENT ЗАПИСЬ ОСТАНОВЛЕНА")
+                        self.on_agent_deactivate()
+                    return True
 
             # Q&A mode: same key + Ctrl added (e.g. Ctrl+Opt+Space)
             if self._source == "key" and key_code == self._key_code and self.on_qa_activate:

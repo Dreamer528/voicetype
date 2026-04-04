@@ -54,6 +54,7 @@ from history import add_entry, load_history, truncate_text, clear_history
 from settings_window import SettingsWindowController
 from local_transcriber import LocalTranscriber
 from answer_window import AnswerWindow
+from agent import _build_system_prompt, execute_action, parse_llm_response
 
 IDLE = "idle"
 RECORDING = "recording"
@@ -98,6 +99,7 @@ class VoiceTypeApp(rumps.App):
         self.hotkey_manager = None
         self._generation = 0  # tracks current recording/processing cycle
         self._qa_mode = False  # True when recording a Q&A question
+        self._agent_mode = False  # True when recording an agent command
 
         # Thread-safe queue for dispatching work to the main thread.
         # AppKit/rumps UI must only be touched from the main thread;
@@ -265,19 +267,23 @@ class VoiceTypeApp(rumps.App):
 
         # Animated overlay
         if state == RECORDING:
-            if self._qa_mode:
-                qa_label = "Спрашивайте..." if lang == "ru" else "Ask..."
-                self.overlay.show_recording(qa_label)
+            if self._agent_mode:
+                rec_label = "Команда..." if lang == "ru" else "Command..."
+            elif self._qa_mode:
+                rec_label = "Спрашивайте..." if lang == "ru" else "Ask..."
             else:
-                self.overlay.show_recording(labels["recording"])
+                rec_label = labels["recording"]
+            self.overlay.show_recording(rec_label)
             self._start_duration_timer()
         elif state == PROCESSING:
             self._stop_duration_timer()
-            if self._qa_mode:
-                qa_proc = "AI думает..." if lang == "ru" else "AI thinking..."
-                self.overlay.show_processing(qa_proc)
+            if self._agent_mode:
+                proc_label = "Выполняю..." if lang == "ru" else "Executing..."
+            elif self._qa_mode:
+                proc_label = "AI думает..." if lang == "ru" else "AI thinking..."
             else:
-                self.overlay.show_processing(labels["processing"])
+                proc_label = labels["processing"]
+            self.overlay.show_processing(proc_label)
         else:
             self._stop_duration_timer()
             self.overlay.hide()
@@ -543,6 +549,7 @@ class VoiceTypeApp(rumps.App):
                 self.recorder.cleanup_file(audio_path)
             log.info("Запись отменена (Esc)")
             self._qa_mode = False
+            self._agent_mode = False
             self._set_state(IDLE)
         elif self.answer_window.is_visible():
             self.answer_window.hide()
@@ -736,6 +743,140 @@ class VoiceTypeApp(rumps.App):
 
         threading.Thread(target=_do, daemon=True).start()
 
+    # --- Agent mode (Opt+Cmd+Space) ---
+
+    def _on_agent_activate(self):
+        self._run_on_main(self._do_agent_activate)
+
+    def _do_agent_activate(self):
+        if self.state == RECORDING or self.state == LEARNING:
+            return
+        if self.answer_window.is_visible():
+            self.answer_window.hide()
+        self._agent_mode = True
+        self._qa_mode = False
+        self._generation += 1
+        self._set_state(RECORDING)
+        self.recorder.start_recording()
+        if hasattr(self.transcriber, 'preload'):
+            self.transcriber.preload()
+
+    def _on_agent_deactivate(self):
+        self._run_on_main(self._do_agent_deactivate)
+
+    def _do_agent_deactivate(self):
+        if self.state == RECORDING and self._agent_mode:
+            self._stop_and_process_agent()
+
+    def _stop_and_process_agent(self):
+        duration = self.recorder.get_duration()
+        audio_path = self.recorder.stop_recording()
+        if not audio_path or duration < MIN_RECORDING_SECONDS:
+            if audio_path:
+                self.recorder.cleanup_file(audio_path)
+            self._agent_mode = False
+            self._set_state(IDLE)
+            return
+        log.info("Agent аудио: %s (%.1fs)", audio_path, duration)
+        gen = self._generation
+        self._set_state(PROCESSING)
+        threading.Thread(
+            target=self._process_agent, args=(audio_path, gen), daemon=True
+        ).start()
+
+    def _process_agent(self, audio_path, gen):
+        """Transcribe command, send to LLM with tools, execute action."""
+        try:
+            if not self.transcriber:
+                return
+            log.info("Agent: транскрибирую команду...")
+            command = self.transcriber.transcribe(audio_path)
+            log.info("Agent команда: %s", command[:100])
+
+            self._run_on_main(lambda: self.answer_window.show_loading(command))
+
+            # Send to LLM with tool-calling system prompt
+            action_data = self._agent_ask(command)
+            log.info("Agent действие: %s", action_data.get("action", "none"))
+
+            # Execute the action
+            result = execute_action(action_data)
+            log.info("Agent результат: %s", result[:100])
+
+            action_name = action_data.get("action", "none")
+            if action_name == "none":
+                display = result
+            else:
+                display = f"✅ {action_data.get('reply', action_name)}\n\n{result}" if result != action_data.get('reply', '') else f"✅ {result}"
+
+            self._run_on_main(lambda: self.answer_window.show(command, display))
+        except Exception as e:
+            log.error("Agent ошибка: %s", e)
+            error_msg = str(e)[:200]
+            self._run_on_main(lambda: self.answer_window.show(
+                "Ошибка", error_msg
+            ))
+        finally:
+            if self.transcriber:
+                self.transcriber.cleanup(audio_path)
+            else:
+                AudioRecorder.cleanup_file(audio_path)
+            self._agent_mode = False
+            def _reset():
+                if self._generation == gen:
+                    self._set_state(IDLE)
+            self._run_on_main(_reset)
+
+    def _agent_ask(self, command):
+        """Send command to LLM with tool-calling prompt, return parsed action."""
+        import httpx
+        api_key = self.config.get("openrouter_api_key", "")
+        if not api_key:
+            raise RuntimeError("OpenRouter API ключ не задан")
+        lang = self.config.get("language", "ru")
+        system_prompt = _build_system_prompt(lang)
+
+        models = self._QA_MODELS  # reuse the same model rotation
+        last_error = None
+
+        for model in models:
+            try:
+                resp = httpx.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": command},
+                        ],
+                        "max_tokens": 300,
+                        "temperature": 0.1,
+                    },
+                    timeout=20,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    text = data["choices"][0]["message"]["content"]
+                    return parse_llm_response(text)
+                elif resp.status_code in (429, 503, 404):
+                    last_error = f"{model}: HTTP {resp.status_code}"
+                    continue
+                else:
+                    last_error = f"{model}: HTTP {resp.status_code}"
+                    continue
+            except httpx.TimeoutException:
+                last_error = f"{model}: таймаут"
+                continue
+            except Exception as e:
+                last_error = str(e)
+                continue
+
+        raise RuntimeError(f"Все модели недоступны: {last_error}")
+
     # --- Dictation processing ---
 
     def _stop_and_process(self):
@@ -872,6 +1013,8 @@ class VoiceTypeApp(rumps.App):
             hotkey_cfg=hotkey_cfg,
             on_qa_activate=self._on_qa_activate,
             on_qa_deactivate=self._on_qa_deactivate,
+            on_agent_activate=self._on_agent_activate,
+            on_agent_deactivate=self._on_agent_deactivate,
         )
         self.hotkey_manager.start()
 
