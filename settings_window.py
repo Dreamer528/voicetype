@@ -131,13 +131,13 @@ class SettingsWindowController(NSObject):
     def _build_window(self):
         style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, 480, 660), style, NSBackingStoreBuffered, False
+            NSMakeRect(0, 0, 500, 820), style, NSBackingStoreBuffered, False
         )
         self.window.setTitle_("VoiceType — Настройки")
         self.window.center()
         self.window.setReleasedWhenClosed_(False)
 
-        main_stack = NSStackView.alloc().initWithFrame_(NSMakeRect(0, 0, 460, 640))
+        main_stack = NSStackView.alloc().initWithFrame_(NSMakeRect(0, 0, 480, 800))
         main_stack.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
         main_stack.setSpacing_(10)
         main_stack.setAlignment_(0x100)  # Leading
@@ -207,11 +207,11 @@ class SettingsWindowController(NSObject):
 
         main_stack.addView_inGravity_(_separator(), 1)
 
-        # --- AI ДВИЖОК ---
-        main_stack.addView_inGravity_(_section_header("AI ДВИЖОК"), 1)
+        # --- ДИКТОВКА (Opt+Space) ---
+        main_stack.addView_inGravity_(_section_header("ДИКТОВКА (Opt+Space)"), 1)
 
-        self.trans_popup = _popup(TRANSCRIPTION_MODES)
-        main_stack.addView_inGravity_(_hstack(_label("Транскрипция:"), self.trans_popup), 1)
+        self.dict_trans_popup = _popup(TRANSCRIPTION_MODES)
+        main_stack.addView_inGravity_(_hstack(_label("Транскрипция:"), self.dict_trans_popup), 1)
 
         self.local_model_popup = _popup(LOCAL_MODELS)
         main_stack.addView_inGravity_(_hstack(_label("Локальная модель:"), self.local_model_popup), 1)
@@ -221,8 +221,11 @@ class SettingsWindowController(NSObject):
 
         main_stack.addView_inGravity_(_separator(), 1)
 
-        # --- AI АССИСТЕНТ ---
-        main_stack.addView_inGravity_(_section_header("AI АССИСТЕНТ (Ctrl+Opt+Space)"), 1)
+        # --- Q&A (Ctrl+Opt+Space) ---
+        main_stack.addView_inGravity_(_section_header("Q&A (Ctrl+Opt+Space)"), 1)
+
+        self.qa_trans_popup = _popup(TRANSCRIPTION_MODES)
+        main_stack.addView_inGravity_(_hstack(_label("Транскрипция:"), self.qa_trans_popup), 1)
 
         self.openrouter_key_field = _secure_field("sk-or-v1-...", width=230)
         or_show_btn = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 30, 22))
@@ -239,6 +242,64 @@ class SettingsWindowController(NSObject):
 
         self.qa_length_popup = _popup(QA_LENGTHS)
         main_stack.addView_inGravity_(_hstack(_label("Длина ответа:"), self.qa_length_popup), 1)
+
+        main_stack.addView_inGravity_(_separator(), 1)
+
+        # --- АГЕНТ (Opt+Cmd+Space) ---
+        main_stack.addView_inGravity_(_section_header("АГЕНТ (Opt+Cmd+Space)"), 1)
+
+        self.agent_trans_popup = _popup(TRANSCRIPTION_MODES)
+        main_stack.addView_inGravity_(_hstack(_label("Транскрипция:"), self.agent_trans_popup), 1)
+
+        self.agent_voice_cb = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 250, 22))
+        self.agent_voice_cb.setButtonType_(NSButtonTypeSwitch)
+        self.agent_voice_cb.setTitle_("Голосовой ответ агента")
+        self.agent_voice_cb.setFont_(NSFont.systemFontOfSize_(13))
+        main_stack.addView_inGravity_(_hstack(_label(""), self.agent_voice_cb), 1)
+
+        main_stack.addView_inGravity_(_separator(), 1)
+
+        # --- КАСТОМНЫЕ КОМАНДЫ ---
+        main_stack.addView_inGravity_(_section_header("ГОЛОСОВЫЕ КОМАНДЫ (Агент)"), 1)
+
+        # Commands list (editable text view showing trigger → actions)
+        self._commands_field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 380, 22))
+        self._commands_field.setPlaceholderString_("рабочий режим")
+        self._commands_field.setFont_(NSFont.systemFontOfSize_(13))
+
+        self._commands_actions = _text_field("open_app:Telegram, open_app:Cursor, toggle_dnd", width=250)
+        self._commands_actions.setFont_(NSFont.systemFontOfSize_(12))
+
+        add_cmd_btn = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 30, 22))
+        add_cmd_btn.setTitle_("+")
+        add_cmd_btn.setBezelStyle_(NSBezelStyleRounded)
+        add_cmd_btn.setTarget_(self)
+        add_cmd_btn.setAction_("addCommand:")
+
+        main_stack.addView_inGravity_(
+            _hstack(_label("Триггер:"), self._commands_field, add_cmd_btn), 1
+        )
+        main_stack.addView_inGravity_(
+            _hstack(_label("Действия:"), self._commands_actions), 1
+        )
+
+        # Show existing commands as read-only list
+        self._commands_list_label = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 400, 60))
+        self._commands_list_label.setBezeled_(False)
+        self._commands_list_label.setDrawsBackground_(False)
+        self._commands_list_label.setEditable_(False)
+        self._commands_list_label.setSelectable_(True)
+        self._commands_list_label.setFont_(NSFont.systemFontOfSize_(11))
+        self._commands_list_label.setTextColor_(NSColor.secondaryLabelColor())
+        self._commands_list_label.setLineBreakMode_(0)  # wrap
+        main_stack.addView_inGravity_(self._commands_list_label, 1)
+
+        del_cmd_btn = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 180, 22))
+        del_cmd_btn.setTitle_("Удалить все команды")
+        del_cmd_btn.setBezelStyle_(NSBezelStyleRounded)
+        del_cmd_btn.setTarget_(self)
+        del_cmd_btn.setAction_("clearCommands:")
+        main_stack.addView_inGravity_(_hstack(_label(""), del_cmd_btn), 1)
 
         main_stack.addView_inGravity_(_separator(), 1)
 
@@ -290,9 +351,24 @@ class SettingsWindowController(NSObject):
             1 if self._config.get("format_with_llm", True) else 0
         )
 
-        trans_mode = self._config.get("transcription_mode", "cloud")
-        self.trans_popup.selectItemAtIndex_(
-            TRANSCRIPTION_CODES.index(trans_mode) if trans_mode in TRANSCRIPTION_CODES else 0
+        # Per-mode transcription
+        dict_trans = self._config.get("dictation_transcription", self._config.get("transcription_mode", "cloud"))
+        self.dict_trans_popup.selectItemAtIndex_(
+            TRANSCRIPTION_CODES.index(dict_trans) if dict_trans in TRANSCRIPTION_CODES else 0
+        )
+
+        qa_trans = self._config.get("qa_transcription", "local")
+        self.qa_trans_popup.selectItemAtIndex_(
+            TRANSCRIPTION_CODES.index(qa_trans) if qa_trans in TRANSCRIPTION_CODES else 0
+        )
+
+        agent_trans = self._config.get("agent_transcription", "local")
+        self.agent_trans_popup.selectItemAtIndex_(
+            TRANSCRIPTION_CODES.index(agent_trans) if agent_trans in TRANSCRIPTION_CODES else 0
+        )
+
+        self.agent_voice_cb.setState_(
+            1 if self._config.get("agent_voice_feedback", True) else 0
         )
 
         local_model = self._config.get("local_whisper_model", "base")
@@ -310,6 +386,9 @@ class SettingsWindowController(NSObject):
         self.qa_length_popup.selectItemAtIndex_(
             QA_LENGTH_CODES.index(qa_len) if qa_len in QA_LENGTH_CODES else 0
         )
+
+        # Update commands list display
+        self._update_commands_display()
 
     @objc.python_method
     def _build_config(self):
@@ -331,9 +410,21 @@ class SettingsWindowController(NSObject):
         config["max_recording_seconds"] = int(self.max_slider.intValue())
         config["format_with_llm"] = bool(self.format_checkbox.state())
 
-        trans_idx = self.trans_popup.indexOfSelectedItem()
-        if 0 <= trans_idx < len(TRANSCRIPTION_CODES):
-            config["transcription_mode"] = TRANSCRIPTION_CODES[trans_idx]
+        # Per-mode transcription
+        dict_idx = self.dict_trans_popup.indexOfSelectedItem()
+        if 0 <= dict_idx < len(TRANSCRIPTION_CODES):
+            config["dictation_transcription"] = TRANSCRIPTION_CODES[dict_idx]
+            config["transcription_mode"] = TRANSCRIPTION_CODES[dict_idx]  # backward compat
+
+        qa_idx2 = self.qa_trans_popup.indexOfSelectedItem()
+        if 0 <= qa_idx2 < len(TRANSCRIPTION_CODES):
+            config["qa_transcription"] = TRANSCRIPTION_CODES[qa_idx2]
+
+        agent_idx = self.agent_trans_popup.indexOfSelectedItem()
+        if 0 <= agent_idx < len(TRANSCRIPTION_CODES):
+            config["agent_transcription"] = TRANSCRIPTION_CODES[agent_idx]
+
+        config["agent_voice_feedback"] = bool(self.agent_voice_cb.state())
 
         model_idx = self.local_model_popup.indexOfSelectedItem()
         if 0 <= model_idx < len(LOCAL_MODELS):
@@ -375,6 +466,67 @@ class SettingsWindowController(NSObject):
             self.openrouter_key_field.setStringValue_(self._or_key_plain.stringValue())
             self._or_key_plain.setHidden_(True)
             self.openrouter_key_field.setHidden_(False)
+
+    def addCommand_(self, sender):
+        trigger = self._commands_field.stringValue().strip()
+        actions_str = self._commands_actions.stringValue().strip()
+        if not trigger or not actions_str:
+            return
+        # Parse actions: "open_app:Safari, set_volume:50, toggle_dnd"
+        actions = []
+        for part in actions_str.split(","):
+            part = part.strip()
+            if ":" in part:
+                name, param = part.split(":", 1)
+                name = name.strip()
+                param = param.strip()
+                # Guess param key based on action name
+                param_key = {
+                    "open_app": "app_name", "close_app": "app_name",
+                    "switch_app": "app_name", "set_volume": "level",
+                    "search_web": "query", "search_youtube": "query",
+                    "open_url": "url", "open_folder": "path",
+                    "say": "text", "timer": "seconds",
+                    "create_reminder": "title", "toggle_wifi": "state",
+                    "toggle_bluetooth": "state", "music_control": "action",
+                    "open_settings": "section", "system_info": "info_type",
+                }.get(name, "value")
+                try:
+                    param = int(param)
+                except ValueError:
+                    pass
+                actions.append({"action": name, "params": {param_key: param}})
+            else:
+                actions.append({"action": part, "params": {}})
+
+        if not actions:
+            return
+        cmds = self._config.get("custom_commands", {})
+        cmds[trigger] = actions
+        self._config["custom_commands"] = cmds
+        self._commands_field.setStringValue_("")
+        self._commands_actions.setStringValue_("")
+        self._update_commands_display()
+
+    def clearCommands_(self, sender):
+        self._config["custom_commands"] = {}
+        self._update_commands_display()
+
+    @objc.python_method
+    def _update_commands_display(self):
+        cmds = self._config.get("custom_commands", {})
+        if not cmds:
+            self._commands_list_label.setStringValue_("Нет кастомных команд")
+            return
+        lines = []
+        for trigger, actions in cmds.items():
+            acts = ", ".join(
+                f"{a['action']}:{list(a.get('params',{}).values())[0]}"
+                if a.get("params") else a["action"]
+                for a in actions
+            )
+            lines.append(f"• \"{trigger}\" → {acts}")
+        self._commands_list_label.setStringValue_("\n".join(lines))
 
     def sliderChanged_(self, sender):
         val = int(sender.intValue())

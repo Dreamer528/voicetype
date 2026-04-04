@@ -226,11 +226,10 @@ class VoiceTypeApp(rumps.App):
     # --- Transcriber ---
 
     def _init_transcriber(self):
-        """Initialize transcriber based on transcription_mode config."""
-        mode = self.config.get("transcription_mode", "cloud")
+        """Initialize transcribers for each mode."""
         language = self.config.get("language", "ru")
 
-        # Always try to init cloud transcriber (needed for LLM formatting)
+        # Always try to init cloud transcriber (needed for LLM formatting + cloud modes)
         api_key = self.config.get("groq_api_key", "")
         if api_key:
             self._cloud_transcriber = Transcriber(
@@ -241,32 +240,46 @@ class VoiceTypeApp(rumps.App):
                 llm_model=self.config.get("llm_model", "llama-3.3-70b-versatile"),
             )
 
+        # Init local transcriber if any mode needs it
+        self._local_transcriber = None
         local_ok = LocalTranscriber.is_available()
-        if mode in ("local", "auto") and not local_ok:
-            log.warning("Локальный режим запрошен, но MLX-Whisper недоступен — fallback на облако")
-
-        if mode == "local" and local_ok:
-            self.transcriber = LocalTranscriber(
+        if local_ok:
+            self._local_transcriber = LocalTranscriber(
                 model_name=self.config.get("local_whisper_model", "base"),
                 language=language,
             )
-            log.info("Используется локальный транскрайбер (MLX-Whisper)")
-            return True
-        elif mode == "auto" and local_ok:
-            self.transcriber = LocalTranscriber(
-                model_name=self.config.get("local_whisper_model", "base"),
-                language=language,
-            )
-            log.info("Авто-режим: используется локальный транскрайбер")
-            return True
 
-        # Cloud mode (default)
-        if not api_key:
+        # Set default transcriber (for dictation mode)
+        mode = self.config.get("dictation_transcription",
+                               self.config.get("transcription_mode", "cloud"))
+        self.transcriber = self._get_transcriber_for_mode(mode)
+
+        if not self.transcriber and not api_key:
             return False
-        self.transcriber = self._cloud_transcriber
         log.info("Используется облачный транскрайбер (Groq)")
         return True
 
+
+    def _get_transcriber_for_mode(self, mode):
+        """Get transcriber for a given mode (cloud/local/auto)."""
+        if mode == "local" and self._local_transcriber:
+            return self._local_transcriber
+        elif mode == "auto" and self._local_transcriber:
+            return self._local_transcriber
+        elif self._cloud_transcriber:
+            return self._cloud_transcriber
+        return self._local_transcriber or self._cloud_transcriber
+
+    def _get_active_transcriber(self):
+        """Get the right transcriber for current mode (dictation/qa/agent)."""
+        if self._agent_mode:
+            mode = self.config.get("agent_transcription", "local")
+        elif self._qa_mode:
+            mode = self.config.get("qa_transcription", "local")
+        else:
+            mode = self.config.get("dictation_transcription",
+                                   self.config.get("transcription_mode", "cloud"))
+        return self._get_transcriber_for_mode(mode) or self.transcriber
 
     # --- State ---
 
@@ -644,10 +657,11 @@ class VoiceTypeApp(rumps.App):
     def _process_qa(self, audio_path, gen):
         """Transcribe question, send to LLM, show answer in window."""
         try:
-            if not self.transcriber:
+            t = self._get_active_transcriber()
+            if not t:
                 return
             log.info("QA: транскрибирую вопрос...")
-            question = self.transcriber.transcribe(audio_path)
+            question = t.transcribe(audio_path)
             log.info("QA вопрос: %s", question[:100])
 
             # Add clipboard context if referenced
@@ -839,10 +853,11 @@ class VoiceTypeApp(rumps.App):
     def _process_agent(self, audio_path, gen):
         """Transcribe command, send to LLM with tools, execute action."""
         try:
-            if not self.transcriber:
+            t = self._get_active_transcriber()
+            if not t:
                 return
             log.info("Agent: транскрибирую команду...")
-            command = self.transcriber.transcribe(audio_path)
+            command = t.transcribe(audio_path)
             log.info("Agent команда: %s", command[:100])
 
             # Check custom commands first (instant, no LLM needed)
@@ -884,8 +899,8 @@ class VoiceTypeApp(rumps.App):
                 result = execute_action(action_data)
                 log.info("Agent результат: %s", result[:100])
 
-            # Voice feedback for agent (short reply)
-            if reply and action_name != "say":
+            # Voice feedback for agent (optional)
+            if self.config.get("agent_voice_feedback", True) and reply and action_name != "say":
                 subprocess.Popen(["say", "-r", "250", reply[:100]],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
