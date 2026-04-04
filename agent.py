@@ -114,29 +114,13 @@ TOOLS = [
 
 
 def _build_system_prompt(lang="ru"):
-    """Build system prompt with available tools for the LLM."""
-    tools_json = json.dumps(TOOLS, ensure_ascii=False)
+    """Build compact system prompt for fast agent responses."""
     lang_name = "русском" if lang == "ru" else "английском"
 
-    return f"""Ты — голосовой ассистент macOS. Пользователь даёт голосовую команду.
-
-ИНСТРУМЕНТЫ: {tools_json}
-
-ВЕРНИ строго JSON (без другого текста):
-{{"action":"имя","params":{{"ключ":"значение"}},"reply":"Краткий ответ"}}
-
-Если просто вопрос: {{"action":"none","params":{{}},"reply":"Ответ"}}
-
-Примеры:
-"Открой телеграм" → {{"action":"open_app","params":{{"app_name":"Telegram"}},"reply":"Открываю Telegram"}}
-"Громкость 30" → {{"action":"set_volume","params":{{"level":30}},"reply":"Громкость 30%"}}
-"Найди борщ" → {{"action":"search_web","params":{{"query":"борщ"}},"reply":"Ищу в Google"}}
-"Заблокируй экран" → {{"action":"lock_screen","params":{{}},"reply":"Блокирую"}}
-"Напомни купить молоко" → {{"action":"create_reminder","params":{{"title":"Купить молоко"}},"reply":"Напоминание создано"}}
-"Сверни окно" → {{"action":"minimize_window","params":{{}},"reply":"Сворачиваю"}}
-"Покажи загрузки" → {{"action":"show_downloads","params":{{}},"reply":"Открываю загрузки"}}
-
-ВАЖНО: только JSON, app_name на английском, отвечай на {lang_name}."""
+    return f"""Агент macOS. Верни ТОЛЬКО JSON.
+Действия: open_app(app_name), close_app(app_name), switch_app(app_name), set_volume(level:0-100), mute(), search_web(query), search_youtube(query), open_url(url), open_folder(path), show_downloads(), screenshot(), lock_screen(), sleep_display(), toggle_dark_mode(), toggle_dnd(), toggle_wifi(state:on/off), toggle_bluetooth(state:on/off), music_control(action:play/pause/next/previous/stop), minimize_window(), fullscreen_window(), close_window(), new_tab(), close_tab(), timer(seconds,message), say(text), create_note(title,body), create_reminder(title), send_message(to,text), clipboard_copy(text), type_text(text), run_shortcut(name), open_settings(section:wifi/bluetooth/display/sound/battery/general), system_info(info_type:battery/disk/memory/wifi/all), empty_trash(), show_desktop(), open_file(path), none().
+Формат: {{"action":"name","params":{{"key":"val"}},"reply":"краткий ответ на {lang_name}"}}
+app_name на английском. Только JSON, без текста."""
 
 
 def execute_action(action_data):

@@ -820,18 +820,35 @@ class VoiceTypeApp(rumps.App):
             self._run_on_main(_reset)
 
     def _agent_ask(self, command):
-        """Send command to LLM with tool-calling prompt, return parsed action."""
+        """Send command to LLM — try Groq first (fast), fallback to OpenRouter."""
         import httpx
-        api_key = self.config.get("openrouter_api_key", "")
-        if not api_key:
-            raise RuntimeError("OpenRouter API ключ не задан")
         lang = self.config.get("language", "ru")
         system_prompt = _build_system_prompt(lang)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": command},
+        ]
 
-        models = self._QA_MODELS  # reuse the same model rotation
-        last_error = None
+        # 1) Try Groq (llama-3.3-70b, ~1s response time)
+        if self._cloud_transcriber:
+            try:
+                response = self._cloud_transcriber.client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=messages,
+                    temperature=0.05,
+                    max_tokens=100,
+                )
+                text = response.choices[0].message.content
+                return parse_llm_response(text)
+            except Exception as e:
+                log.warning("Agent Groq failed: %s, trying OpenRouter", e)
 
-        for model in models:
+        # 2) Fallback to OpenRouter
+        api_key = self.config.get("openrouter_api_key", "")
+        if not api_key:
+            raise RuntimeError("API ключ не задан")
+
+        for model in self._QA_MODELS:
             try:
                 resp = httpx.post(
                     "https://openrouter.ai/api/v1/chat/completions",
@@ -841,33 +858,21 @@ class VoiceTypeApp(rumps.App):
                     },
                     json={
                         "model": model,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": command},
-                        ],
-                        "max_tokens": 300,
-                        "temperature": 0.1,
+                        "messages": messages,
+                        "max_tokens": 100,
+                        "temperature": 0.05,
                     },
-                    timeout=20,
+                    timeout=15,
                 )
                 if resp.status_code == 200:
-                    data = resp.json()
-                    text = data["choices"][0]["message"]["content"]
+                    text = resp.json()["choices"][0]["message"]["content"]
                     return parse_llm_response(text)
-                elif resp.status_code in (429, 503, 404):
-                    last_error = f"{model}: HTTP {resp.status_code}"
+                if resp.status_code in (429, 503, 404):
                     continue
-                else:
-                    last_error = f"{model}: HTTP {resp.status_code}"
-                    continue
-            except httpx.TimeoutException:
-                last_error = f"{model}: таймаут"
-                continue
-            except Exception as e:
-                last_error = str(e)
+            except Exception:
                 continue
 
-        raise RuntimeError(f"Все модели недоступны: {last_error}")
+        raise RuntimeError("Все модели недоступны")
 
     # --- Dictation processing ---
 
