@@ -104,6 +104,8 @@ MODE_CODES = ["push_to_talk", "toggle"]
 TRANSCRIPTION_MODES = ["Облако (Groq)", "Локальный (MLX)", "Авто"]
 TRANSCRIPTION_CODES = ["cloud", "local", "auto"]
 LOCAL_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
+QA_LENGTHS = ["Короткий (2-4 предложения)", "Средний (5-10 предложений)", "Развёрнутый"]
+QA_LENGTH_CODES = ["short", "medium", "long"]
 
 
 class SettingsWindowController(NSObject):
@@ -129,13 +131,13 @@ class SettingsWindowController(NSObject):
     def _build_window(self):
         style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, 480, 560), style, NSBackingStoreBuffered, False
+            NSMakeRect(0, 0, 480, 660), style, NSBackingStoreBuffered, False
         )
         self.window.setTitle_("VoiceType — Настройки")
         self.window.center()
         self.window.setReleasedWhenClosed_(False)
 
-        main_stack = NSStackView.alloc().initWithFrame_(NSMakeRect(0, 0, 460, 540))
+        main_stack = NSStackView.alloc().initWithFrame_(NSMakeRect(0, 0, 460, 640))
         main_stack.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
         main_stack.setSpacing_(10)
         main_stack.setAlignment_(0x100)  # Leading
@@ -219,6 +221,27 @@ class SettingsWindowController(NSObject):
 
         main_stack.addView_inGravity_(_separator(), 1)
 
+        # --- AI АССИСТЕНТ ---
+        main_stack.addView_inGravity_(_section_header("AI АССИСТЕНТ (Ctrl+Opt+Space)"), 1)
+
+        self.openrouter_key_field = _secure_field("sk-or-v1-...", width=230)
+        or_show_btn = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 30, 22))
+        or_show_btn.setTitle_("👁")
+        or_show_btn.setBezelStyle_(NSBezelStyleRounded)
+        or_show_btn.setTarget_(self)
+        or_show_btn.setAction_("toggleOrKeyVisibility:")
+        self._or_key_plain = _text_field("sk-or-v1-...", width=230)
+        self._or_key_plain.setHidden_(True)
+        self._or_key_visible = False
+        main_stack.addView_inGravity_(
+            _hstack(_label("OpenRouter ключ:"), self.openrouter_key_field, self._or_key_plain, or_show_btn), 1
+        )
+
+        self.qa_length_popup = _popup(QA_LENGTHS)
+        main_stack.addView_inGravity_(_hstack(_label("Длина ответа:"), self.qa_length_popup), 1)
+
+        main_stack.addView_inGravity_(_separator(), 1)
+
         # --- Кнопки ---
         spacer = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
 
@@ -279,6 +302,15 @@ class SettingsWindowController(NSObject):
 
         self.base_url_field.setStringValue_(self._config.get("base_url", ""))
 
+        or_key = self._config.get("openrouter_api_key", "")
+        self.openrouter_key_field.setStringValue_(or_key)
+        self._or_key_plain.setStringValue_(or_key)
+
+        qa_len = self._config.get("qa_answer_length", "short")
+        self.qa_length_popup.selectItemAtIndex_(
+            QA_LENGTH_CODES.index(qa_len) if qa_len in QA_LENGTH_CODES else 0
+        )
+
     @objc.python_method
     def _build_config(self):
         config = self._config.copy()
@@ -308,6 +340,16 @@ class SettingsWindowController(NSObject):
             config["local_whisper_model"] = LOCAL_MODELS[model_idx]
 
         config["base_url"] = self.base_url_field.stringValue()
+
+        if self._or_key_visible:
+            config["openrouter_api_key"] = self._or_key_plain.stringValue()
+        else:
+            config["openrouter_api_key"] = self.openrouter_key_field.stringValue()
+
+        qa_idx = self.qa_length_popup.indexOfSelectedItem()
+        if 0 <= qa_idx < len(QA_LENGTH_CODES):
+            config["qa_answer_length"] = QA_LENGTH_CODES[qa_idx]
+
         return config
 
     # --- ObjC actions (must be real selectors for NSButton targets) ---
@@ -322,6 +364,17 @@ class SettingsWindowController(NSObject):
             self.api_key_field.setStringValue_(self._api_key_plain.stringValue())
             self._api_key_plain.setHidden_(True)
             self.api_key_field.setHidden_(False)
+
+    def toggleOrKeyVisibility_(self, sender):
+        self._or_key_visible = not self._or_key_visible
+        if self._or_key_visible:
+            self._or_key_plain.setStringValue_(self.openrouter_key_field.stringValue())
+            self.openrouter_key_field.setHidden_(True)
+            self._or_key_plain.setHidden_(False)
+        else:
+            self.openrouter_key_field.setStringValue_(self._or_key_plain.stringValue())
+            self._or_key_plain.setHidden_(True)
+            self.openrouter_key_field.setHidden_(False)
 
     def sliderChanged_(self, sender):
         val = int(sender.intValue())
