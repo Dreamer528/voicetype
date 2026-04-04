@@ -63,6 +63,32 @@ LEARNING = "learning"
 
 RESOURCES_DIR = os.path.join(os.path.dirname(__file__), "resources")
 
+
+def _play_sound(name):
+    """Play a system sound asynchronously."""
+    path = f"/System/Library/Sounds/{name}.aiff"
+    if os.path.exists(path):
+        subprocess.Popen(["afplay", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _get_clipboard():
+    """Get current clipboard text."""
+    try:
+        r = subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=2)
+        return r.stdout.strip()
+    except Exception:
+        return ""
+
+
+def _get_frontmost_app_name():
+    """Get name of frontmost application."""
+    try:
+        from AppKit import NSWorkspace
+        app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        return app.localizedName() if app else ""
+    except Exception:
+        return ""
+
 DEFAULT_HOTKEY = {"source": "key", "key_code": 2, "modifiers": 0x60000}
 
 # Minimum recording duration to avoid sending near-empty audio (400 errors)
@@ -100,6 +126,7 @@ class VoiceTypeApp(rumps.App):
         self._generation = 0  # tracks current recording/processing cycle
         self._qa_mode = False  # True when recording a Q&A question
         self._agent_mode = False  # True when recording an agent command
+        self._qa_history = []  # conversation history for Q&A mode
 
         # Thread-safe queue for dispatching work to the main thread.
         # AppKit/rumps UI must only be touched from the main thread;
@@ -243,6 +270,7 @@ class VoiceTypeApp(rumps.App):
     # --- State ---
 
     def _set_state(self, state):
+        prev = self.state
         self.state = state
         icon_map = {
             IDLE: "mic_idle.png",
@@ -264,6 +292,12 @@ class VoiceTypeApp(rumps.App):
 
         lang = self.config.get("language", "ru")
         labels = _LABELS.get(lang, _LABELS["ru"])
+
+        # Sound feedback
+        if state == RECORDING:
+            _play_sound("Tink")
+        elif state == IDLE and prev != IDLE:
+            _play_sound("Pop")
 
         # Animated overlay
         if state == RECORDING:
@@ -615,12 +649,25 @@ class VoiceTypeApp(rumps.App):
             question = self.transcriber.transcribe(audio_path)
             log.info("QA вопрос: %s", question[:100])
 
+            # Add clipboard context if referenced
+            if any(w in question.lower() for w in ("буфер", "скопиро", "clipboard", "вставь",
+                                                     "переведи это", "что я скопировал")):
+                clip = _get_clipboard()
+                if clip:
+                    question += f"\n\n[Содержимое буфера обмена: {clip[:500]}]"
+
             # Show loading state
             self._run_on_main(lambda: self.answer_window.show_loading(question))
 
-            # Send to OpenRouter
+            # Send to OpenRouter with conversation history
             answer = self._ask_openrouter(question)
             log.info("QA ответ: %s", answer[:100])
+
+            # Save to conversation history (keep last 10 exchanges)
+            self._qa_history.append({"role": "user", "content": question})
+            self._qa_history.append({"role": "assistant", "content": answer})
+            if len(self._qa_history) > 20:
+                self._qa_history = self._qa_history[-20:]
 
             self._run_on_main(lambda: self.answer_window.show(question, answer))
         except Exception as e:
@@ -677,10 +724,11 @@ class VoiceTypeApp(rumps.App):
             f"{length_prompt} "
             f"Отвечай на {'русском' if lang == 'ru' else 'английском'} языке."
         )
-        messages = [
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": question},
-        ]
+        messages = [{"role": "system", "content": system_msg}]
+        # Add conversation history for context
+        if self._qa_history:
+            messages.extend(self._qa_history[-10:])  # last 5 exchanges
+        messages.append({"role": "user", "content": question})
 
         # Try preferred model first, then rotate through fallbacks
         preferred = self.config.get("qa_model", self._QA_MODELS[0])
@@ -796,15 +844,49 @@ class VoiceTypeApp(rumps.App):
             command = self.transcriber.transcribe(audio_path)
             log.info("Agent команда: %s", command[:100])
 
+            # Check custom commands first (instant, no LLM needed)
+            custom = self.config.get("custom_commands", {})
+            cmd_lower = command.lower().strip().rstrip('.')
+            for trigger, actions in custom.items():
+                if trigger.lower() in cmd_lower:
+                    log.info("Agent: кастомная команда '%s'", trigger)
+                    for act in actions:
+                        result = execute_action(act)
+                        log.info("Agent custom: %s → %s", act.get("action"), result[:50])
+                    subprocess.Popen(["say", "-r", "250", trigger],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    return  # skip LLM
+
+            # Add context: active app + clipboard snippet
+            context = _get_frontmost_app_name()
+            clipboard = _get_clipboard()
+            enriched = command
+            if context:
+                enriched += f" [активное приложение: {context}]"
+            if clipboard and ("буфер" in command.lower() or "скопиро" in command.lower()
+                              or "clipboard" in command.lower() or "вставь" in command.lower()):
+                enriched += f" [буфер обмена: {clipboard[:200]}]"
+
             # Send to LLM with tool-calling system prompt
-            action_data = self._agent_ask(command)
+            action_data = self._agent_ask(enriched)
             action_name = action_data.get("action", "none")
             reply = action_data.get("reply", "")
             log.info("Agent действие: %s — %s", action_name, reply)
 
-            # Execute the action
-            result = execute_action(action_data)
-            log.info("Agent результат: %s", result[:100])
+            # Execute the action(s)
+            if isinstance(action_data.get("actions"), list):
+                # Chain of actions
+                for act in action_data["actions"]:
+                    result = execute_action(act)
+                    log.info("Agent chain: %s → %s", act.get("action"), result[:50])
+            else:
+                result = execute_action(action_data)
+                log.info("Agent результат: %s", result[:100])
+
+            # Voice feedback for agent (short reply)
+            if reply and action_name != "say":
+                subprocess.Popen(["say", "-r", "250", reply[:100]],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         except Exception as e:
             log.error("Agent ошибка: %s", e)

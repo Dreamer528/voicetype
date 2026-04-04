@@ -33,6 +33,18 @@ DEFAULT_CONFIG = {
     "openrouter_api_key": "",
     "qa_model": "nvidia/nemotron-3-super-120b-a12b:free",
     "qa_answer_length": "short",            # short | medium | long
+    "custom_commands": {
+        "рабочий режим": [
+            {"action": "open_app", "params": {"app_name": "Telegram"}},
+            {"action": "open_app", "params": {"app_name": "Cursor"}},
+            {"action": "toggle_dnd", "params": {}},
+        ],
+        "режим отдыха": [
+            {"action": "close_app", "params": {"app_name": "Telegram"}},
+            {"action": "close_app", "params": {"app_name": "Cursor"}},
+            {"action": "toggle_dnd", "params": {}},
+        ],
+    },
 }
 
 
