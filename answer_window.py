@@ -1,7 +1,7 @@
 """Floating answer window for AI Q&A responses.
 
-Displays LLM answers in a styled floating panel with basic
-markdown rendering (bold, lists, headers, code).
+Displays LLM answers in a styled floating panel with
+markdown rendering (bold, italic, lists, headers, code blocks).
 Includes "Подробнее" button to request a longer answer.
 """
 
@@ -14,10 +14,13 @@ from AppKit import (
     NSButton,
     NSColor,
     NSFont,
+    NSFontManager,
     NSMakeRange,
     NSMutableAttributedString,
     NSFontAttributeName,
     NSForegroundColorAttributeName,
+    NSParagraphStyleAttributeName,
+    NSMutableParagraphStyle,
     NSObject,
     NSScreen,
     NSScrollView,
@@ -28,14 +31,38 @@ from AppKit import (
 )
 from Foundation import NSMakeRect, NSString
 
-WINDOW_W = 520
-WINDOW_H = 420
-PADDING = 18
-BUTTON_H = 32
+WINDOW_W = 620
+WINDOW_H = 500
+PADDING = 22
+BUTTON_H = 34
+
+# Colors
+_WHITE = None
+_GRAY = None
+_DIM = None
+_ACCENT = None
+_CODE_COLOR = None
+_CODE_BG = None
+_HEADING_COLOR = None
+_SEPARATOR_COLOR = None
+_BULLET_COLOR = None
+
+
+def _init_colors():
+    global _WHITE, _GRAY, _DIM, _ACCENT, _CODE_COLOR, _HEADING_COLOR
+    global _SEPARATOR_COLOR, _BULLET_COLOR
+    _WHITE = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.93, 0.93, 0.95, 1.0)
+    _GRAY = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.65, 0.65, 0.7, 1.0)
+    _DIM = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.45, 0.45, 0.5, 1.0)
+    _ACCENT = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.4, 0.75, 1.0, 1.0)
+    _CODE_COLOR = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.55, 0.9, 0.55, 1.0)
+    _HEADING_COLOR = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.5, 0.8, 1.0, 1.0)
+    _SEPARATOR_COLOR = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.25, 0.25, 0.3, 1.0)
+    _BULLET_COLOR = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.4, 0.7, 0.95, 1.0)
 
 
 def _clean_markdown(text):
-    """Strip markdown to clean text, preserving structure."""
+    """Strip problematic markdown, preserving structure."""
     text = re.sub(r'<br\s*/?>', '\n', text)
     text = re.sub(r'<[^>]+>', '', text)
     lines = text.split('\n')
@@ -47,93 +74,167 @@ def _clean_markdown(text):
         if stripped.startswith('|') and stripped.endswith('|'):
             cells = [c.strip() for c in stripped.strip('|').split('|')]
             cells = [c for c in cells if c]
-            line = '  '.join(cells)
+            line = '    '.join(cells)
         cleaned.append(line)
     return '\n'.join(cleaned)
 
 
-def _markdown_to_attributed(text, base_size=13.5):
-    """Convert markdown text to NSMutableAttributedString with styling."""
-    text = _clean_markdown(text)
+def _make_paragraph_style(indent=0, spacing=3):
+    style = NSMutableParagraphStyle.alloc().init()
+    style.setLineSpacing_(spacing)
+    style.setParagraphSpacing_(4)
+    if indent:
+        style.setFirstLineHeadIndent_(indent)
+        style.setHeadIndent_(indent)
+    return style
 
+
+def _markdown_to_attributed(text, base_size=14):
+    """Convert markdown text to NSMutableAttributedString with rich styling."""
+    if not _WHITE:
+        _init_colors()
+
+    text = _clean_markdown(text)
     result = NSMutableAttributedString.alloc().init()
+
     base_font = NSFont.systemFontOfSize_(base_size)
     bold_font = NSFont.boldSystemFontOfSize_(base_size)
-    heading_font = NSFont.boldSystemFontOfSize_(base_size + 2)
-    white = NSColor.whiteColor()
-    accent = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.5, 0.8, 1.0, 1.0)
-    gray = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.75, 0.75, 0.8, 1.0)
+    italic_font = NSFontManager.sharedFontManager().convertFont_toHaveTrait_(
+        base_font, 1)  # NSItalicFontMask = 1
+    h1_font = NSFont.boldSystemFontOfSize_(base_size + 4)
+    h2_font = NSFont.boldSystemFontOfSize_(base_size + 2)
+    h3_font = NSFont.boldSystemFontOfSize_(base_size + 1)
+    code_inline_font = NSFont.userFixedPitchFontOfSize_(base_size - 1)
+    code_block_font = NSFont.userFixedPitchFontOfSize_(base_size - 2)
 
     lines = text.split('\n')
     in_code_block = False
+    prev_empty = False
 
-    for line in lines:
+    for i, line in enumerate(lines):
         stripped = line.strip()
 
+        # Code block toggle
         if stripped.startswith('```'):
             in_code_block = not in_code_block
+            if in_code_block:
+                _append(result, '\n', base_font, _WHITE, _make_paragraph_style())
             continue
 
         if in_code_block:
-            code_font = NSFont.userFixedPitchFontOfSize_(base_size - 1)
-            _append(result, line + '\n', code_font, gray)
+            _append(result, '  ' + line + '\n', code_block_font, _CODE_COLOR,
+                    _make_paragraph_style(indent=12, spacing=1))
             continue
 
+        # Empty line
         if not stripped:
-            _append(result, '\n', base_font, white)
+            if not prev_empty:
+                _append(result, '\n', base_font, _WHITE, _make_paragraph_style(spacing=2))
+            prev_empty = True
             continue
+        prev_empty = False
 
-        m = re.match(r'^#{1,3}\s+(.+)', stripped)
+        # H1 (# Title)
+        m = re.match(r'^#\s+(.+)', stripped)
         if m:
-            _append(result, m.group(1) + '\n', heading_font, accent)
+            _append(result, m.group(1) + '\n', h1_font, _HEADING_COLOR,
+                    _make_paragraph_style(spacing=6))
             continue
 
+        # H2 (## Title)
+        m = re.match(r'^##\s+(.+)', stripped)
+        if m:
+            _append(result, m.group(1) + '\n', h2_font, _HEADING_COLOR,
+                    _make_paragraph_style(spacing=5))
+            continue
+
+        # H3 (### Title)
+        m = re.match(r'^###\s+(.+)', stripped)
+        if m:
+            _append(result, m.group(1) + '\n', h3_font, _HEADING_COLOR,
+                    _make_paragraph_style(spacing=4))
+            continue
+
+        # Bullet points
         m = re.match(r'^[\-\*•]\s+(.+)', stripped)
         if m:
-            _append_inline(result, '  • ' + m.group(1) + '\n', base_font, bold_font, white)
+            style = _make_paragraph_style(indent=20, spacing=2)
+            _append(result, '  •  ', bold_font, _BULLET_COLOR, style)
+            _append_inline(result, m.group(1) + '\n', base_font, bold_font,
+                           italic_font, code_inline_font, _WHITE, style)
             continue
 
+        # Numbered lists
         m = re.match(r'^(\d+)[.)]\s+(.+)', stripped)
         if m:
-            _append_inline(result, f'  {m.group(1)}. ' + m.group(2) + '\n',
-                           base_font, bold_font, white)
+            style = _make_paragraph_style(indent=20, spacing=2)
+            _append(result, f'  {m.group(1)}.  ', bold_font, _BULLET_COLOR, style)
+            _append_inline(result, m.group(2) + '\n', base_font, bold_font,
+                           italic_font, code_inline_font, _WHITE, style)
             continue
 
-        _append_inline(result, stripped + '\n', base_font, bold_font, white)
+        # Horizontal rule
+        if re.match(r'^[\-\*_]{3,}$', stripped):
+            _append(result, '─' * 50 + '\n', NSFont.systemFontOfSize_(8),
+                    _SEPARATOR_COLOR, _make_paragraph_style())
+            continue
+
+        # Regular paragraph
+        style = _make_paragraph_style(spacing=3)
+        _append_inline(result, stripped + '\n', base_font, bold_font,
+                       italic_font, code_inline_font, _WHITE, style)
 
     return result
 
 
-def _append(result, text, font, color):
+def _append(result, text, font, color, para_style=None):
+    """Append plain text segment with optional paragraph style."""
     s = NSMutableAttributedString.alloc().initWithString_(text)
     r = NSMakeRange(0, s.length())
     s.addAttribute_value_range_(NSFontAttributeName, font, r)
     s.addAttribute_value_range_(NSForegroundColorAttributeName, color, r)
+    if para_style:
+        s.addAttribute_value_range_(NSParagraphStyleAttributeName, para_style, r)
     result.appendAttributedString_(s)
 
 
-def _append_inline(result, text, base_font, bold_font, color):
-    parts = re.split(r'(\*\*[^*]+\*\*|`[^`]+`)', text)
+def _append_inline(result, text, base_font, bold_font, italic_font,
+                   code_font, color, para_style=None):
+    """Append text with inline **bold**, *italic*, and `code` rendering."""
+    # Split by **bold**, *italic*, `code`
+    parts = re.split(r'(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)', text)
     for part in parts:
+        if not part:
+            continue
         if part.startswith('**') and part.endswith('**'):
-            _append(result, part[2:-2], bold_font, color)
+            _append(result, part[2:-2], bold_font, color, para_style)
+        elif part.startswith('*') and part.endswith('*'):
+            _append(result, part[1:-1], italic_font,
+                    NSColor.colorWithCalibratedRed_green_blue_alpha_(0.8, 0.8, 0.85, 1.0),
+                    para_style)
         elif part.startswith('`') and part.endswith('`'):
-            code_font = NSFont.userFixedPitchFontOfSize_(12)
-            code_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.6, 0.9, 0.6, 1.0)
-            _append(result, part[1:-1], code_font, code_color)
+            _append(result, part[1:-1], code_font, _CODE_COLOR, para_style)
         else:
-            _append(result, part, base_font, color)
+            _append(result, part, base_font, color, para_style)
 
 
 class AnswerContentView(NSView):
     """Dark rounded background for the answer window."""
 
     def drawRect_(self, rect):
-        NSColor.colorWithCalibratedRed_green_blue_alpha_(0.1, 0.1, 0.12, 0.95).setFill()
+        NSColor.colorWithCalibratedRed_green_blue_alpha_(0.08, 0.08, 0.1, 0.96).setFill()
         path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-            self.bounds(), 14, 14
+            self.bounds(), 16, 16
         )
         path.fill()
+
+        # Subtle inner border
+        NSColor.colorWithCalibratedRed_green_blue_alpha_(0.2, 0.2, 0.25, 0.5).setStroke()
+        inner = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            self.bounds(), 16, 16
+        )
+        inner.setLineWidth_(0.5)
+        inner.stroke()
 
 
 class _ButtonHandler(NSObject):
@@ -163,10 +264,9 @@ class AnswerWindow:
         self._detail_btn = None
         self._btn_handler = None
         self._last_question = None
-        self._on_detail = None  # callback for "Подробнее"
+        self._on_detail = None
 
     def set_on_detail(self, callback):
-        """Set callback for detail button: callback(question)."""
         self._on_detail = callback
 
     def _create_window(self):
@@ -192,31 +292,13 @@ class AnswerWindow:
         )
         self.window.setContentView_(bg)
 
-        # "Подробнее" button at the bottom
-        btn_w = 110
-        btn_x = WINDOW_W - PADDING - btn_w
+        # Bottom buttons
         btn_y = PADDING - 2
 
-        self._btn_handler = _ButtonHandler.alloc().initWithCallback_(self._on_detail_click)
-
-        self._detail_btn = NSButton.alloc().initWithFrame_(
-            ((btn_x, btn_y), (btn_w, BUTTON_H))
-        )
-        self._detail_btn.setTitle_("Подробнее")
-        self._detail_btn.setBezelStyle_(1)
-        self._detail_btn.setTarget_(self._btn_handler)
-        self._detail_btn.setAction_(objc.selector(self._btn_handler.onClick_, signature=b"v@:@"))
-        self._detail_btn.setWantsLayer_(True)
-        bg.addSubview_(self._detail_btn)
-
-        # "Закрыть" button
-        close_btn_w = 80
-        close_x = PADDING
-
+        # "Закрыть" button (left)
         self._close_handler = _ButtonHandler.alloc().initWithCallback_(self.hide)
-
         self._close_btn = NSButton.alloc().initWithFrame_(
-            ((close_x, btn_y), (close_btn_w, BUTTON_H))
+            ((PADDING, btn_y), (90, BUTTON_H))
         )
         self._close_btn.setTitle_("Закрыть")
         self._close_btn.setBezelStyle_(1)
@@ -224,8 +306,20 @@ class AnswerWindow:
         self._close_btn.setAction_(objc.selector(self._close_handler.onClick_, signature=b"v@:@"))
         bg.addSubview_(self._close_btn)
 
+        # "Подробнее" button (right)
+        btn_w = 120
+        self._btn_handler = _ButtonHandler.alloc().initWithCallback_(self._on_detail_click)
+        self._detail_btn = NSButton.alloc().initWithFrame_(
+            ((WINDOW_W - PADDING - btn_w, btn_y), (btn_w, BUTTON_H))
+        )
+        self._detail_btn.setTitle_("Подробнее ›")
+        self._detail_btn.setBezelStyle_(1)
+        self._detail_btn.setTarget_(self._btn_handler)
+        self._detail_btn.setAction_(objc.selector(self._btn_handler.onClick_, signature=b"v@:@"))
+        bg.addSubview_(self._detail_btn)
+
         # Scrollable text view (above buttons)
-        text_top = PADDING + BUTTON_H + 8
+        text_top = PADDING + BUTTON_H + 10
         scroll_h = WINDOW_H - text_top - PADDING
         scroll_frame = ((PADDING, text_top), (WINDOW_W - 2 * PADDING, scroll_h))
         scroll = NSScrollView.alloc().initWithFrame_(scroll_frame)
@@ -235,14 +329,14 @@ class AnswerWindow:
         scroll.setDrawsBackground_(False)
         scroll.setBorderType_(0)
 
-        content_w = WINDOW_W - 2 * PADDING - 4
+        content_w = WINDOW_W - 2 * PADDING - 8
         text_frame = ((0, 0), (content_w, scroll_h))
         self.text_view = NSTextView.alloc().initWithFrame_(text_frame)
         self.text_view.setEditable_(False)
         self.text_view.setSelectable_(True)
         self.text_view.setDrawsBackground_(False)
         self.text_view.setTextColor_(NSColor.whiteColor())
-        self.text_view.setFont_(NSFont.systemFontOfSize_(13.5))
+        self.text_view.setFont_(NSFont.systemFontOfSize_(14))
         self.text_view.setHorizontallyResizable_(False)
         self.text_view.setVerticallyResizable_(True)
         text_container = self.text_view.textContainer()
@@ -258,6 +352,8 @@ class AnswerWindow:
 
     def show(self, question, answer):
         """Show the answer window with question and response."""
+        if not _WHITE:
+            _init_colors()
         if not self.window:
             self._create_window()
 
@@ -270,25 +366,23 @@ class AnswerWindow:
 
         styled = NSMutableAttributedString.alloc().init()
 
-        gray = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.55, 0.55, 0.6, 1.0)
-        label_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.45, 0.45, 0.5, 1.0)
-        _append(styled, "Вопрос: ", NSFont.boldSystemFontOfSize_(11), label_color)
-        _append(styled, question + "\n\n",
-                NSFont.systemFontOfSize_(12.5), gray)
+        # Question (compact, dimmed)
+        _append(styled, "Вопрос:  ", NSFont.boldSystemFontOfSize_(11), _DIM)
+        _append(styled, question + "\n\n", NSFont.systemFontOfSize_(12.5), _GRAY)
 
-        sep_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.3, 0.3, 0.35, 1.0)
-        _append(styled, "─" * 45 + "\n\n", NSFont.systemFontOfSize_(8), sep_color)
+        # Thin separator
+        _append(styled, '─' * 55 + '\n\n', NSFont.systemFontOfSize_(6), _SEPARATOR_COLOR)
 
+        # Answer with full markdown rendering
         answer_styled = _markdown_to_attributed(answer)
         styled.appendAttributedString_(answer_styled)
 
         self.text_view.textStorage().setAttributedString_(styled)
         self.text_view.scrollRangeToVisible_(NSMakeRange(0, 0))
 
-        # Show/enable detail button
         if self._detail_btn:
             self._detail_btn.setEnabled_(True)
-            self._detail_btn.setTitle_("Подробнее")
+            self._detail_btn.setTitle_("Подробнее ›")
 
         self.window.setAlphaValue_(0.0)
         self.window.orderFront_(None)
@@ -300,7 +394,7 @@ class AnswerWindow:
 
     def show_loading(self, question):
         """Show window with loading state."""
-        self.show(question, "Думаю...")
+        self.show(question, "⏳ Думаю...")
         if self._detail_btn:
             self._detail_btn.setEnabled_(False)
 
