@@ -113,7 +113,12 @@ TOOLS = [
 
     # --- TickTick ---
     {"name": "ticktick_add", "description": "Добавить задачу в TickTick",
-     "params": {"title": "str", "priority": "int (0=none,1=low,3=medium,5=high)"}},
+     "params": {"title": "str", "content": "str", "priority": "int (0=none,1=low,3=medium,5=high)",
+                "due_date": "str (YYYY-MM-DD, optional)", "due_time": "str (HH:MM, optional)"}},
+    {"name": "ticktick_list", "description": "Показать список задач из TickTick",
+     "params": {}},
+    {"name": "ticktick_complete", "description": "Завершить задачу в TickTick по названию",
+     "params": {"title": "str"}},
     {"name": "ticktick_open", "description": "Открыть TickTick",
      "params": {}},
 
@@ -130,7 +135,7 @@ def _build_system_prompt(lang="ru"):
     lang_name = "русском" if lang == "ru" else "английском"
 
     return f"""Агент macOS. Верни ТОЛЬКО JSON.
-Действия: open_app(app_name), close_app(app_name), switch_app(app_name), set_volume(level:0-100), mute(), search_web(query), search_youtube(query), open_url(url), open_folder(path), show_downloads(), screenshot(), lock_screen(), sleep_display(), toggle_dark_mode(), toggle_dnd(), toggle_wifi(state:on/off), toggle_bluetooth(state:on/off), music_control(action:play/pause/next/previous/stop), minimize_window(), fullscreen_window(), close_window(), new_tab(), close_tab(), timer(seconds,message), say(text), create_note(title,body), create_reminder(title), send_message(to,text), clipboard_copy(text), type_text(text), run_shortcut(name), open_settings(section:wifi/bluetooth/display/sound/battery/general), system_info(info_type:battery/disk/memory/wifi/all), empty_trash(), show_desktop(), open_file(path), ticktick_add(title,priority:0/1/3/5), ticktick_open(), open_calendar(), show_calendar_today(), create_calendar_event(title,date:YYYY-MM-DD,time:HH:MM), none().
+Действия: open_app(app_name), close_app(app_name), switch_app(app_name), set_volume(level:0-100), mute(), search_web(query), search_youtube(query), open_url(url), open_folder(path), show_downloads(), screenshot(), lock_screen(), sleep_display(), toggle_dark_mode(), toggle_dnd(), toggle_wifi(state:on/off), toggle_bluetooth(state:on/off), music_control(action:play/pause/next/previous/stop), minimize_window(), fullscreen_window(), close_window(), new_tab(), close_tab(), timer(seconds,message), say(text), create_note(title,body), create_reminder(title), send_message(to,text), clipboard_copy(text), type_text(text), run_shortcut(name), open_settings(section:wifi/bluetooth/display/sound/battery/general), system_info(info_type:battery/disk/memory/wifi/all), empty_trash(), show_desktop(), open_file(path), ticktick_add(title,content,priority:0/1/3/5,due_date:YYYY-MM-DD,due_time:HH:MM), ticktick_list(), ticktick_complete(title), ticktick_open(), open_calendar(), show_calendar_today(), create_calendar_event(title,date:YYYY-MM-DD,time:HH:MM), none().
 Одно действие: {{"action":"name","params":{{}},"reply":"ответ на {lang_name}"}}
 Несколько действий: {{"actions":[{{"action":"name","params":{{}}}},{{"action":"name","params":{{}}}}],"reply":"ответ"}}
 Если в команде есть [буфер обмена: ...], используй этот текст как контекст.
@@ -450,12 +455,49 @@ def execute_action(action_data):
 
         # --- TickTick ---
         elif action == "ticktick_add":
-            title = params.get("title", "")
-            priority = params.get("priority", 0)
-            import urllib.parse
-            url = f"ticktick://x-callback-url/task/add?title={urllib.parse.quote(title)}&priority={priority}"
-            subprocess.Popen(["open", url])
-            return reply or f"Задача в TickTick: {title}"
+            try:
+                from ticktick import create_task
+                title = params.get("title", "")
+                content = params.get("content", "")
+                priority = int(params.get("priority", 0))
+                due_date = params.get("due_date")
+                due_time = params.get("due_time")
+                result = create_task(title, content=content, priority=priority,
+                                     due_date=due_date, due_time=due_time)
+                return reply or f"Задача создана: {title}"
+            except Exception as e:
+                return f"Ошибка TickTick: {e}"
+
+        elif action == "ticktick_list":
+            try:
+                from ticktick import get_tasks
+                tasks = get_tasks()
+                if not tasks:
+                    return "Нет активных задач"
+                lines = []
+                for t in tasks[:10]:
+                    p = {0: "  ", 1: "🔵", 3: "🟡", 5: "🔴"}.get(t.get("priority", 0), "  ")
+                    lines.append(f"{p} {t.get('title', '?')}")
+                return "Задачи TickTick:\n" + "\n".join(lines)
+            except Exception as e:
+                return f"Ошибка TickTick: {e}"
+
+        elif action == "ticktick_complete":
+            try:
+                from ticktick import get_all_tasks, complete_task
+                title_query = params.get("title", "").lower()
+                tasks = get_all_tasks()
+                matched = None
+                for t in tasks:
+                    if title_query in t.get("title", "").lower():
+                        matched = t
+                        break
+                if not matched:
+                    return f"Задача не найдена: {title_query}"
+                complete_task(matched.get("projectId", ""), matched["id"])
+                return reply or f"Задача завершена: {matched['title']}"
+            except Exception as e:
+                return f"Ошибка TickTick: {e}"
 
         elif action == "ticktick_open":
             subprocess.Popen(["open", "-a", "TickTick"])
