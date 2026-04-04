@@ -649,7 +649,8 @@ class VoiceTypeApp(rumps.App):
         lang = self.config.get("language", "ru")
         system_msg = (
             "Ты краткий и полезный AI-ассистент. "
-            "Отвечай чётко и по делу. "
+            "Отвечай максимально коротко — 2-5 предложений. "
+            "Без таблиц, без markdown. Только суть. "
             f"Отвечай на {'русском' if lang == 'ru' else 'английском'} языке."
         )
         messages = [
@@ -673,7 +674,7 @@ class VoiceTypeApp(rumps.App):
                     json={
                         "model": model,
                         "messages": messages,
-                        "max_tokens": 1000,
+                        "max_tokens": 400,
                     },
                     timeout=30,
                 )
