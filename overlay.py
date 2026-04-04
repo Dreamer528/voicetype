@@ -382,7 +382,8 @@ class RecordingOverlay:
         self.window.setBackgroundColor_(NSColor.clearColor())
         self.window.setIgnoresMouseEvents_(True)
         self.window.setHasShadow_(True)
-        self.window.setCollectionBehavior_(1 << 0 | 1 << 4)
+        # canJoinAllSpaces (1) | fullScreenAuxiliary (256) — visible on every Space
+        self.window.setCollectionBehavior_(1 | 256)
         self.window.setMovableByWindowBackground_(True)
 
         self.orb_view = WaveformView.alloc().initWithFrame_(
