@@ -110,6 +110,18 @@ TOOLS = [
      "params": {"name": "str"}},
     {"name": "open_settings", "description": "Открыть раздел Системных настроек",
      "params": {"section": "str (wifi, bluetooth, display, sound, general, privacy, notifications)"}},
+
+    # --- TickTick ---
+    {"name": "ticktick_add", "description": "Добавить задачу в TickTick",
+     "params": {"title": "str", "priority": "int (0=none,1=low,3=medium,5=high)"}},
+    {"name": "ticktick_open", "description": "Открыть TickTick",
+     "params": {}},
+
+    # --- Calendar ---
+    {"name": "open_calendar", "description": "Открыть приложение Calendar",
+     "params": {}},
+    {"name": "show_calendar_today", "description": "Показать события на сегодня",
+     "params": {}},
 ]
 
 
@@ -118,7 +130,7 @@ def _build_system_prompt(lang="ru"):
     lang_name = "русском" if lang == "ru" else "английском"
 
     return f"""Агент macOS. Верни ТОЛЬКО JSON.
-Действия: open_app(app_name), close_app(app_name), switch_app(app_name), set_volume(level:0-100), mute(), search_web(query), search_youtube(query), open_url(url), open_folder(path), show_downloads(), screenshot(), lock_screen(), sleep_display(), toggle_dark_mode(), toggle_dnd(), toggle_wifi(state:on/off), toggle_bluetooth(state:on/off), music_control(action:play/pause/next/previous/stop), minimize_window(), fullscreen_window(), close_window(), new_tab(), close_tab(), timer(seconds,message), say(text), create_note(title,body), create_reminder(title), send_message(to,text), clipboard_copy(text), type_text(text), run_shortcut(name), open_settings(section:wifi/bluetooth/display/sound/battery/general), system_info(info_type:battery/disk/memory/wifi/all), empty_trash(), show_desktop(), open_file(path), none().
+Действия: open_app(app_name), close_app(app_name), switch_app(app_name), set_volume(level:0-100), mute(), search_web(query), search_youtube(query), open_url(url), open_folder(path), show_downloads(), screenshot(), lock_screen(), sleep_display(), toggle_dark_mode(), toggle_dnd(), toggle_wifi(state:on/off), toggle_bluetooth(state:on/off), music_control(action:play/pause/next/previous/stop), minimize_window(), fullscreen_window(), close_window(), new_tab(), close_tab(), timer(seconds,message), say(text), create_note(title,body), create_reminder(title), send_message(to,text), clipboard_copy(text), type_text(text), run_shortcut(name), open_settings(section:wifi/bluetooth/display/sound/battery/general), system_info(info_type:battery/disk/memory/wifi/all), empty_trash(), show_desktop(), open_file(path), ticktick_add(title,priority:0/1/3/5), ticktick_open(), open_calendar(), show_calendar_today(), create_calendar_event(title,date:YYYY-MM-DD,time:HH:MM), none().
 Одно действие: {{"action":"name","params":{{}},"reply":"ответ на {lang_name}"}}
 Несколько действий: {{"actions":[{{"action":"name","params":{{}}}},{{"action":"name","params":{{}}}}],"reply":"ответ"}}
 Если в команде есть [буфер обмена: ...], используй этот текст как контекст.
@@ -435,6 +447,44 @@ def execute_action(action_data):
             pane = section_map.get(section, section_map["general"])
             subprocess.Popen(["open", f"x-apple.systempreferences:{pane}"])
             return reply or f"Открываю настройки: {section}"
+
+        # --- TickTick ---
+        elif action == "ticktick_add":
+            title = params.get("title", "")
+            priority = params.get("priority", 0)
+            import urllib.parse
+            url = f"ticktick://x-callback-url/task/add?title={urllib.parse.quote(title)}&priority={priority}"
+            subprocess.Popen(["open", url])
+            return reply or f"Задача в TickTick: {title}"
+
+        elif action == "ticktick_open":
+            subprocess.Popen(["open", "-a", "TickTick"])
+            return reply or "Открываю TickTick"
+
+        # --- Calendar ---
+        elif action == "open_calendar":
+            subprocess.Popen(["open", "-a", "Calendar"])
+            return reply or "Открываю календарь"
+
+        elif action == "show_calendar_today":
+            events = _applescript('''
+                tell application "Calendar"
+                    set today to current date
+                    set time of today to 0
+                    set tomorrow to today + 1 * days
+                    set eventList to ""
+                    repeat with cal in calendars
+                        set evts to (every event of cal whose start date >= today and start date < tomorrow)
+                        repeat with e in evts
+                            set eventList to eventList & summary of e & " (" & time string of start date of e & ")" & linefeed
+                        end repeat
+                    end repeat
+                    return eventList
+                end tell
+            ''')
+            if events.strip():
+                return f"События на сегодня:\n{events.strip()}"
+            return "Нет событий на сегодня"
 
         else:
             return reply or f"Неизвестное действие: {action}"
