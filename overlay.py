@@ -56,6 +56,11 @@ class WaveformView(NSView):
         return False
 
     @objc.python_method
+    def set_color_mode(self, mode):
+        """Set color mode: 'dictation' (teal), 'qa' (purple), 'agent' (green)."""
+        self._color_mode = mode
+
+    @objc.python_method
     def set_state(self, state):
         self._state = state
         self.setNeedsDisplay_(True)
@@ -185,12 +190,24 @@ class WaveformView(NSView):
             bar_h = bar_amp * WAVE_H
             x = bar_start_x + i * bar_gap
 
-            # Color: warm gradient based on amplitude
-            # Low amplitude: soft teal/cyan → High amplitude: vibrant orange/red
+            # Color based on mode
             t = min(bar_amp * 2.5, 1.0)
-            r = 0.2 + 0.8 * t
-            g = 0.7 - 0.3 * t
-            b = 0.9 - 0.7 * t
+            mode = getattr(self, '_color_mode', 'dictation')
+            if mode == 'qa':
+                # Purple/violet theme
+                r = 0.5 + 0.4 * t
+                g = 0.3 + 0.1 * t
+                b = 0.9 - 0.1 * t
+            elif mode == 'agent':
+                # Green/emerald theme
+                r = 0.1 + 0.3 * t
+                g = 0.7 + 0.3 * t
+                b = 0.3 + 0.2 * t
+            else:
+                # Teal/cyan → orange (default dictation)
+                r = 0.2 + 0.8 * t
+                g = 0.7 - 0.3 * t
+                b = 0.9 - 0.7 * t
 
             # Main bar (upper half)
             color = NSColor.colorWithCalibratedRed_green_blue_alpha_(r, g, b, 0.9)
@@ -398,7 +415,8 @@ class RecordingOverlay:
         y = screen.origin.y + 80
         self.window.setFrameOrigin_((x, y))
 
-    def show_recording(self, label="Говорите..."):
+    def show_recording(self, label="Говорите...", color_mode="dictation"):
+        self.orb_view.set_color_mode(color_mode)
         self.orb_view.set_state("recording")
         self.orb_view.set_label(label)
         self.orb_view.set_hint("Esc — отмена")

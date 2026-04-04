@@ -269,11 +269,14 @@ class VoiceTypeApp(rumps.App):
         if state == RECORDING:
             if self._agent_mode:
                 rec_label = "Команда..." if lang == "ru" else "Command..."
+                color_mode = "agent"
             elif self._qa_mode:
                 rec_label = "Спрашивайте..." if lang == "ru" else "Ask..."
+                color_mode = "qa"
             else:
                 rec_label = labels["recording"]
-            self.overlay.show_recording(rec_label)
+                color_mode = "dictation"
+            self.overlay.show_recording(rec_label, color_mode=color_mode)
             self._start_duration_timer()
         elif state == PROCESSING:
             self._stop_duration_timer()
@@ -793,29 +796,18 @@ class VoiceTypeApp(rumps.App):
             command = self.transcriber.transcribe(audio_path)
             log.info("Agent команда: %s", command[:100])
 
-            self._run_on_main(lambda: self.answer_window.show_loading(command))
-
             # Send to LLM with tool-calling system prompt
             action_data = self._agent_ask(command)
-            log.info("Agent действие: %s", action_data.get("action", "none"))
+            action_name = action_data.get("action", "none")
+            reply = action_data.get("reply", "")
+            log.info("Agent действие: %s — %s", action_name, reply)
 
             # Execute the action
             result = execute_action(action_data)
             log.info("Agent результат: %s", result[:100])
 
-            action_name = action_data.get("action", "none")
-            if action_name == "none":
-                display = result
-            else:
-                display = f"✅ {action_data.get('reply', action_name)}\n\n{result}" if result != action_data.get('reply', '') else f"✅ {result}"
-
-            self._run_on_main(lambda: self.answer_window.show(command, display))
         except Exception as e:
             log.error("Agent ошибка: %s", e)
-            error_msg = str(e)[:200]
-            self._run_on_main(lambda: self.answer_window.show(
-                "Ошибка", error_msg
-            ))
         finally:
             if self.transcriber:
                 self.transcriber.cleanup(audio_path)
