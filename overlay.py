@@ -24,7 +24,7 @@ from AppKit import (
     NSWindowStyleMaskBorderless,
     NSBackingStoreBuffered,
 )
-from Foundation import NSMakeRect, NSString, NSUserDefaults
+from Foundation import NSMakeRect, NSString
 import Quartz
 
 # Window dimensions — wide pill shape
@@ -33,9 +33,6 @@ WINDOW_H = 120
 WAVE_H = 32        # height of waveform area
 WAVE_Y_CENTER = 50  # vertical center of waveform
 NUM_BARS = 40       # number of waveform bars
-
-# UserDefaults key for saved position
-_POS_KEY = "VoiceTypeOverlayPosition"
 
 
 class WaveformView(NSView):
@@ -370,19 +367,9 @@ class RecordingOverlay:
     def __init__(self):
         screen = NSScreen.mainScreen().frame()
 
-        # Restore saved position or center-bottom; clamp to visible screen area
-        defaults = NSUserDefaults.standardUserDefaults()
-        saved = defaults.dictionaryForKey_(_POS_KEY)
-        if saved and "x" in saved and "y" in saved:
-            x = float(saved["x"])
-            y = float(saved["y"])
-        else:
-            x = (screen.size.width - WINDOW_W) / 2
-            y = 80
-
-        # Ensure window stays fully on screen (handles off-screen saved positions)
-        x = max(0, min(x, screen.size.width - WINDOW_W))
-        y = max(0, min(y, screen.size.height - WINDOW_H))
+        # Start centered on main screen (re-centered each time on show)
+        x = screen.origin.x + (screen.size.width - WINDOW_W) / 2
+        y = screen.origin.y + 80
 
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             ((x, y), (WINDOW_W, WINDOW_H)),
@@ -403,13 +390,12 @@ class RecordingOverlay:
         )
         self.window.setContentView_(self.orb_view)
 
-    def _save_position(self):
-        frame = self.window.frame()
-        defaults = NSUserDefaults.standardUserDefaults()
-        defaults.setObject_forKey_(
-            {"x": float(frame.origin.x), "y": float(frame.origin.y)},
-            _POS_KEY,
-        )
+    def _center_on_screen(self):
+        """Move overlay to center-bottom of current main screen."""
+        screen = NSScreen.mainScreen().frame()
+        x = screen.origin.x + (screen.size.width - WINDOW_W) / 2
+        y = screen.origin.y + 80
+        self.window.setFrameOrigin_((x, y))
 
     def show_recording(self, label="Говорите..."):
         self.orb_view.set_state("recording")
@@ -419,6 +405,8 @@ class RecordingOverlay:
         self.orb_view.start_animation()
         self.window.setIgnoresMouseEvents_(False)
 
+        # Always center on current main screen (handles monitor changes)
+        self._center_on_screen()
         self.window.setAlphaValue_(0.0)
         self.window.orderFront_(None)
         NSAnimationContext.beginGrouping()
@@ -436,7 +424,6 @@ class RecordingOverlay:
     def hide(self):
         self.orb_view.stop_animation()
         self.orb_view.set_state("idle")
-        self._save_position()
 
         NSAnimationContext.beginGrouping()
         NSAnimationContext.currentContext().setDuration_(0.2)

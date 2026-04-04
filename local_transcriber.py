@@ -121,6 +121,11 @@ def _find_system_python():
             clean_env["LANG"] = "en_US.UTF-8"
             clean_env["PYTHONIOENCODING"] = "utf-8"
             clean_env["PYTHONWARNINGS"] = "ignore"
+            path = clean_env.get("PATH", "/usr/bin:/bin")
+            for extra in ("/opt/homebrew/bin", "/usr/local/bin"):
+                if extra not in path:
+                    path = extra + ":" + path
+            clean_env["PATH"] = path
             result = subprocess.run(
                 [py, "-c", "import mlx_whisper; print('ok')"],
                 capture_output=True, text=True, timeout=30, env=clean_env,
@@ -176,6 +181,12 @@ class LocalTranscriber:
         env["LANG"] = "en_US.UTF-8"
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONWARNINGS"] = "ignore"
+        # .app bundle has minimal PATH — add Homebrew paths for ffmpeg etc.
+        path = env.get("PATH", "/usr/bin:/bin")
+        for extra in ("/opt/homebrew/bin", "/usr/local/bin"):
+            if extra not in path:
+                path = extra + ":" + path
+        env["PATH"] = path
         return env
 
     def _ensure_worker(self):
