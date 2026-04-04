@@ -93,7 +93,7 @@ class VoiceTypeApp(rumps.App):
         self.transcriber = None
         self._cloud_transcriber = None  # kept for LLM formatting when using local whisper
         self.hotkey_manager = None
-        self._busy = False  # prevents overlapping activate/deactivate cycles
+        self._generation = 0  # tracks current recording/processing cycle
 
         # Thread-safe queue for dispatching work to the main thread.
         # AppKit/rumps UI must only be touched from the main thread;
@@ -481,49 +481,32 @@ class VoiceTypeApp(rumps.App):
 
     def _do_activate(self):
         """Actual activation logic, runs on main thread."""
-        if self._busy or self.state == LEARNING:
+        if self.state == LEARNING:
             return
-
-        # Safety: if stuck in PROCESSING for too long, force reset
-        if self.state == PROCESSING:
-            if hasattr(self, '_processing_start') and time.time() - self._processing_start > 120:
-                log.warning("Принудительный сброс: застрял в PROCESSING > 2 мин")
-                self._busy = False
-                self._set_state(IDLE)
-            else:
-                return
-
-        mode = self.config.get("mode", "push_to_talk")
-
-        if mode == "toggle":
-            if self.state == RECORDING:
+        if self.state == RECORDING:
+            # Already recording (toggle mode: stop)
+            mode = self.config.get("mode", "push_to_talk")
+            if mode == "toggle":
                 self._stop_and_process()
                 if self.hotkey_manager:
                     self.hotkey_manager._active = False
-                return
-            elif self.state == PROCESSING:
-                return
-            if not self.transcriber:
-                rumps.notification(APP_NAME, "API ключ не задан",
-                                   "Откройте настройки и укажите Groq API ключ")
-                return
-            self._set_state(RECORDING)
-            self.recorder.start_recording()
-            if hasattr(self.transcriber, 'preload'):
-                self.transcriber.preload()
-            if self.hotkey_manager:
-                self.hotkey_manager._active = True
-        else:
-            if self.state != IDLE:
-                return
-            if not self.transcriber:
-                rumps.notification(APP_NAME, "API ключ не задан",
-                                   "Откройте настройки и укажите Groq API ключ")
-                return
-            self._set_state(RECORDING)
-            self.recorder.start_recording()
-            if hasattr(self.transcriber, 'preload'):
-                self.transcriber.preload()
+            return
+
+        # Allow new recording even if previous transcription is still running
+        # (PROCESSING state). The old _process_audio thread runs independently.
+        if not self.transcriber:
+            rumps.notification(APP_NAME, "API ключ не задан",
+                               "Откройте настройки и укажите Groq API ключ")
+            return
+
+        self._generation += 1
+        self._set_state(RECORDING)
+        self.recorder.start_recording()
+        if hasattr(self.transcriber, 'preload'):
+            self.transcriber.preload()
+        mode = self.config.get("mode", "push_to_talk")
+        if mode == "toggle" and self.hotkey_manager:
+            self.hotkey_manager._active = True
 
     def _on_deactivate(self):
         """Hotkey released (called from CGEventTap thread)."""
@@ -547,7 +530,6 @@ class VoiceTypeApp(rumps.App):
             if audio_path:
                 self.recorder.cleanup_file(audio_path)
             log.info("Запись отменена (Esc)")
-            self._busy = False
             self._set_state(IDLE)
         elif self.state == LEARNING:
             if hasattr(self, '_learn_timer') and self._learn_timer:
@@ -559,34 +541,30 @@ class VoiceTypeApp(rumps.App):
         """Stop recording and start transcription."""
         if not self.recorder.is_recording() and self.state != RECORDING:
             log.warning("_stop_and_process вызван но запись не активна (state=%s)", self.state)
-            self._busy = False
             self._set_state(IDLE)
             return
         duration = self.recorder.get_duration()
         audio_path = self.recorder.stop_recording()
         if not audio_path:
             log.info("Нет аудио данных")
-            self._busy = False
             self._set_state(IDLE)
             return
         if duration < MIN_RECORDING_SECONDS:
             log.info("Запись слишком короткая (%.2fs), пропускаю", duration)
             self.recorder.cleanup_file(audio_path)
-            self._busy = False
             self._set_state(IDLE)
             return
         log.info("Аудио сохранено: %s (%.1fs)", audio_path, duration)
-        self._busy = True
-        self._processing_start = time.time()
+        gen = self._generation
         self._set_state(PROCESSING)
         thread = threading.Thread(
             target=self._process_audio,
-            args=(audio_path,),
+            args=(audio_path, gen),
             daemon=True,
         )
         thread.start()
 
-    def _process_audio(self, audio_path):
+    def _process_audio(self, audio_path, gen):
         """Runs on a background thread — must not touch UI directly."""
         try:
             if not self.transcriber:
@@ -632,8 +610,9 @@ class VoiceTypeApp(rumps.App):
             else:
                 AudioRecorder.cleanup_file(audio_path)
             def _reset():
-                self._busy = False
-                self._set_state(IDLE)
+                # Only reset to IDLE if no new recording started since this one
+                if self._generation == gen:
+                    self._set_state(IDLE)
             self._run_on_main(_reset)
 
     # --- Lifecycle ---
