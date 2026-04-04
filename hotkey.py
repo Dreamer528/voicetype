@@ -103,11 +103,15 @@ DEFAULT_HOTKEY = {
 class HotkeyManager:
     """Configurable push-to-talk hotkey via Quartz CGEventTap."""
 
-    def __init__(self, on_activate, on_deactivate, on_cancel=None, hotkey_cfg=None):
+    def __init__(self, on_activate, on_deactivate, on_cancel=None, hotkey_cfg=None,
+                 on_qa_activate=None, on_qa_deactivate=None):
         self.on_activate = on_activate
         self.on_deactivate = on_deactivate
         self.on_cancel = on_cancel
+        self.on_qa_activate = on_qa_activate
+        self.on_qa_deactivate = on_qa_deactivate
         self._active = False
+        self._qa_active = False
         self._thread = None
         self._running = False
         self._learn_mode = False
@@ -161,14 +165,38 @@ class HotkeyManager:
                 }
                 return True  # consume
 
-            # Esc key cancels recording (only during active recording)
+            # Esc key cancels recording or hides answer window
             if key_code == 53 and event_type == Quartz.kCGEventKeyDown:
                 if self._active and self.on_cancel:
                     self._active = False
                     log.info(">>> ЗАПИСЬ ОТМЕНЕНА (Esc)")
                     self.on_cancel()
-                    return True  # consume Esc only when cancelling
-                return False  # always pass Esc through to other apps
+                    return True
+                if self._qa_active and self.on_cancel:
+                    self._qa_active = False
+                    log.info(">>> QA ЗАПИСЬ ОТМЕНЕНА (Esc)")
+                    self.on_cancel()
+                    return True
+                return False
+
+            # Q&A mode: same key + Ctrl added (e.g. Ctrl+Opt+Space)
+            if self._source == "key" and key_code == self._key_code and self.on_qa_activate:
+                qa_mods = self._modifiers | MOD_CTRL
+                if flags == qa_mods:
+                    is_repeat = Quartz.CGEventGetIntegerValueField(
+                        event, Quartz.kCGKeyboardEventAutorepeat
+                    )
+                    if is_repeat:
+                        return True
+                    if event_type == Quartz.kCGEventKeyDown and not self._qa_active:
+                        self._qa_active = True
+                        log.info(">>> QA ЗАПИСЬ НАЧАТА")
+                        self.on_qa_activate()
+                    elif event_type == Quartz.kCGEventKeyUp and self._qa_active:
+                        self._qa_active = False
+                        log.info(">>> QA ЗАПИСЬ ОСТАНОВЛЕНА")
+                        self.on_qa_deactivate()
+                    return True
 
             # Normal mode — check match
             if self._source == "key" and key_code == self._key_code:
@@ -178,7 +206,7 @@ class HotkeyManager:
                     event, Quartz.kCGKeyboardEventAutorepeat
                 )
                 if is_repeat:
-                    return True  # consume repeats too
+                    return True
                 if event_type == Quartz.kCGEventKeyDown and not self._active:
                     self._active = True
                     log.info(">>> ЗАПИСЬ НАЧАТА")
@@ -187,7 +215,7 @@ class HotkeyManager:
                     self._active = False
                     log.info(">>> ЗАПИСЬ ОСТАНОВЛЕНА")
                     self.on_deactivate()
-                return True  # consume the hotkey event
+                return True
 
         # --- NX system-defined events (media keys) ---
         elif event_type == NX_SYSDEFINED:

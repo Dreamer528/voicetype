@@ -30,6 +30,8 @@ DEFAULT_CONFIG = {
     "base_url": GROQ_PROXY_BASE_URL,
     "transcription_mode": "cloud",          # cloud | local | auto
     "local_whisper_model": "base",          # tiny | base | small | medium | large-v3
+    "openrouter_api_key": "",
+    "qa_model": "qwen/qwen3.6-plus:free",
 }
 
 

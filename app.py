@@ -53,6 +53,7 @@ from overlay import RecordingOverlay
 from history import add_entry, load_history, truncate_text, clear_history
 from settings_window import SettingsWindowController
 from local_transcriber import LocalTranscriber
+from answer_window import AnswerWindow
 
 IDLE = "idle"
 RECORDING = "recording"
@@ -90,10 +91,12 @@ class VoiceTypeApp(rumps.App):
             ),
         )
         self.overlay = RecordingOverlay()
+        self.answer_window = AnswerWindow()
         self.transcriber = None
         self._cloud_transcriber = None  # kept for LLM formatting when using local whisper
         self.hotkey_manager = None
         self._generation = 0  # tracks current recording/processing cycle
+        self._qa_mode = False  # True when recording a Q&A question
 
         # Thread-safe queue for dispatching work to the main thread.
         # AppKit/rumps UI must only be touched from the main thread;
@@ -261,11 +264,19 @@ class VoiceTypeApp(rumps.App):
 
         # Animated overlay
         if state == RECORDING:
-            self.overlay.show_recording(labels["recording"])
+            if self._qa_mode:
+                qa_label = "Спрашивайте..." if lang == "ru" else "Ask..."
+                self.overlay.show_recording(qa_label)
+            else:
+                self.overlay.show_recording(labels["recording"])
             self._start_duration_timer()
         elif state == PROCESSING:
             self._stop_duration_timer()
-            self.overlay.show_processing(labels["processing"])
+            if self._qa_mode:
+                qa_proc = "AI думает..." if lang == "ru" else "AI thinking..."
+                self.overlay.show_processing(qa_proc)
+            else:
+                self.overlay.show_processing(labels["processing"])
         else:
             self._stop_duration_timer()
             self.overlay.hide()
@@ -524,18 +535,136 @@ class VoiceTypeApp(rumps.App):
         self._run_on_main(self._do_cancel)
 
     def _do_cancel(self):
-        """Cancel current recording without transcribing."""
+        """Cancel current recording without transcribing, or hide answer window."""
         if self.state == RECORDING:
             audio_path = self.recorder.stop_recording()
             if audio_path:
                 self.recorder.cleanup_file(audio_path)
             log.info("Запись отменена (Esc)")
+            self._qa_mode = False
             self._set_state(IDLE)
+        elif self.answer_window.is_visible():
+            self.answer_window.hide()
         elif self.state == LEARNING:
             if hasattr(self, '_learn_timer') and self._learn_timer:
                 self._learn_timer.stop()
             self.hotkey_manager.cancel_learning()
             self._set_state(IDLE)
+
+    # --- Q&A mode ---
+
+    def _on_qa_activate(self):
+        self._run_on_main(self._do_qa_activate)
+
+    def _do_qa_activate(self):
+        if self.state == RECORDING or self.state == LEARNING:
+            return
+        # Hide previous answer if visible
+        if self.answer_window.is_visible():
+            self.answer_window.hide()
+        self._qa_mode = True
+        self._generation += 1
+        self._set_state(RECORDING)
+        self.recorder.start_recording()
+        if hasattr(self.transcriber, 'preload'):
+            self.transcriber.preload()
+
+    def _on_qa_deactivate(self):
+        self._run_on_main(self._do_qa_deactivate)
+
+    def _do_qa_deactivate(self):
+        if self.state == RECORDING and self._qa_mode:
+            self._stop_and_process_qa()
+
+    def _stop_and_process_qa(self):
+        duration = self.recorder.get_duration()
+        audio_path = self.recorder.stop_recording()
+        if not audio_path or duration < MIN_RECORDING_SECONDS:
+            if audio_path:
+                self.recorder.cleanup_file(audio_path)
+            self._qa_mode = False
+            self._set_state(IDLE)
+            return
+        log.info("QA аудио: %s (%.1fs)", audio_path, duration)
+        gen = self._generation
+        self._set_state(PROCESSING)
+        thread = threading.Thread(
+            target=self._process_qa,
+            args=(audio_path, gen),
+            daemon=True,
+        )
+        thread.start()
+
+    def _process_qa(self, audio_path, gen):
+        """Transcribe question, send to LLM, show answer in window."""
+        try:
+            if not self.transcriber:
+                return
+            log.info("QA: транскрибирую вопрос...")
+            question = self.transcriber.transcribe(audio_path)
+            log.info("QA вопрос: %s", question[:100])
+
+            # Show loading state
+            self._run_on_main(lambda: self.answer_window.show_loading(question))
+
+            # Send to OpenRouter
+            answer = self._ask_openrouter(question)
+            log.info("QA ответ: %s", answer[:100])
+
+            self._run_on_main(lambda: self.answer_window.show(question, answer))
+        except Exception as e:
+            log.error("QA ошибка: %s", e)
+            error_msg = str(e)[:200]
+            self._run_on_main(lambda: self.answer_window.show(
+                "Ошибка", error_msg
+            ))
+        finally:
+            if self.transcriber:
+                self.transcriber.cleanup(audio_path)
+            else:
+                AudioRecorder.cleanup_file(audio_path)
+            self._qa_mode = False
+            def _reset():
+                if self._generation == gen:
+                    self._set_state(IDLE)
+            self._run_on_main(_reset)
+
+    def _ask_openrouter(self, question):
+        """Send question to OpenRouter and return answer text."""
+        api_key = self.config.get("openrouter_api_key", "")
+        if not api_key:
+            raise RuntimeError("OpenRouter API ключ не задан (настройки)")
+        model = self.config.get("qa_model", "qwen/qwen3.6-plus:free")
+        lang = self.config.get("language", "ru")
+        system_msg = (
+            "Ты краткий и полезный AI-ассистент. "
+            "Отвечай чётко и по делу. "
+            f"Отвечай на {'русском' if lang == 'ru' else 'английском'} языке."
+        )
+
+        import httpx
+        resp = httpx.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": question},
+                ],
+                "max_tokens": 1000,
+            },
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"OpenRouter: {resp.status_code} — {resp.text[:200]}")
+        data = resp.json()
+        return data["choices"][0]["message"]["content"]
+
+    # --- Dictation processing ---
 
     def _stop_and_process(self):
         """Stop recording and start transcription."""
@@ -669,6 +798,8 @@ class VoiceTypeApp(rumps.App):
             on_deactivate=self._on_deactivate,
             on_cancel=self._on_cancel,
             hotkey_cfg=hotkey_cfg,
+            on_qa_activate=self._on_qa_activate,
+            on_qa_deactivate=self._on_qa_deactivate,
         )
         self.hotkey_manager.start()
 
