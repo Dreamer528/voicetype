@@ -32,6 +32,7 @@ DEFAULT_CONFIG = {
     "local_whisper_model": "base",          # tiny | base | small | medium | large-v3
     "openrouter_api_key": "",
     "qa_model": "nvidia/nemotron-3-super-120b-a12b:free",
+    "qa_answer_length": "short",            # short | medium | long
 }
 
 

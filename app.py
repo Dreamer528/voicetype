@@ -92,6 +92,7 @@ class VoiceTypeApp(rumps.App):
         )
         self.overlay = RecordingOverlay()
         self.answer_window = AnswerWindow()
+        self.answer_window.set_on_detail(self._on_qa_detail)
         self.transcriber = None
         self._cloud_transcriber = None  # kept for LLM formatting when using local whisper
         self.hotkey_manager = None
@@ -640,17 +641,30 @@ class VoiceTypeApp(rumps.App):
         "stepfun/step-3.5-flash:free",              # backup
     ]
 
-    def _ask_openrouter(self, question):
+    # Answer length presets: (system_prompt_extra, max_tokens)
+    _QA_LENGTHS = {
+        "short":  ("Отвечай максимально коротко — 2-4 предложения. Без таблиц. Только суть.", 300),
+        "medium": ("Отвечай средней длины — 5-10 предложений. Можно использовать списки.", 600),
+        "long":   ("Отвечай развёрнуто и подробно. Используй списки, примеры.", 1500),
+    }
+
+    def _ask_openrouter(self, question, detailed=False):
         """Send question to OpenRouter with automatic model rotation."""
         import httpx
         api_key = self.config.get("openrouter_api_key", "")
         if not api_key:
             raise RuntimeError("OpenRouter API ключ не задан (настройки)")
         lang = self.config.get("language", "ru")
+
+        if detailed:
+            length_key = "long"
+        else:
+            length_key = self.config.get("qa_answer_length", "short")
+        length_prompt, max_tokens = self._QA_LENGTHS.get(length_key, self._QA_LENGTHS["short"])
+
         system_msg = (
-            "Ты краткий и полезный AI-ассистент. "
-            "Отвечай максимально коротко — 2-5 предложений. "
-            "Без таблиц, без markdown. Только суть. "
+            "Ты полезный AI-ассистент. "
+            f"{length_prompt} "
             f"Отвечай на {'русском' if lang == 'ru' else 'английском'} языке."
         )
         messages = [
@@ -674,7 +688,7 @@ class VoiceTypeApp(rumps.App):
                     json={
                         "model": model,
                         "messages": messages,
-                        "max_tokens": 400,
+                        "max_tokens": max_tokens,
                     },
                     timeout=30,
                 )
@@ -704,6 +718,23 @@ class VoiceTypeApp(rumps.App):
                 continue
 
         raise RuntimeError(f"Все модели недоступны. Последняя ошибка: {last_error}")
+
+    def _on_qa_detail(self, question):
+        """'Подробнее' button pressed — re-ask with longer answer."""
+        self._run_on_main(lambda: self.answer_window.show_loading(question))
+
+        def _do():
+            try:
+                answer = self._ask_openrouter(question, detailed=True)
+                log.info("QA подробный ответ: %s", answer[:100])
+                self._run_on_main(lambda: self.answer_window.show(question, answer))
+            except Exception as e:
+                log.error("QA detail ошибка: %s", e)
+                self._run_on_main(lambda: self.answer_window.show(
+                    question, f"Ошибка: {str(e)[:200]}"
+                ))
+
+        threading.Thread(target=_do, daemon=True).start()
 
     # --- Dictation processing ---
 

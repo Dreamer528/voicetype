@@ -2,6 +2,7 @@
 
 Displays LLM answers in a styled floating panel with basic
 markdown rendering (bold, lists, headers, code).
+Includes "Подробнее" button to request a longer answer.
 """
 
 import re
@@ -10,15 +11,14 @@ from AppKit import (
     NSAnimationContext,
     NSBackingStoreBuffered,
     NSBezierPath,
+    NSButton,
     NSColor,
     NSFont,
-    NSFontManager,
     NSMakeRange,
     NSMutableAttributedString,
     NSFontAttributeName,
     NSForegroundColorAttributeName,
-    NSParagraphStyleAttributeName,
-    NSMutableParagraphStyle,
+    NSObject,
     NSScreen,
     NSScrollView,
     NSTextView,
@@ -28,26 +28,22 @@ from AppKit import (
 )
 from Foundation import NSMakeRect, NSString
 
-WINDOW_W = 440
-WINDOW_H = 320
+WINDOW_W = 520
+WINDOW_H = 420
 PADDING = 18
+BUTTON_H = 32
 
 
 def _clean_markdown(text):
     """Strip markdown to clean text, preserving structure."""
-    # Remove <br> tags
     text = re.sub(r'<br\s*/?>', '\n', text)
-    # Remove HTML tags
     text = re.sub(r'<[^>]+>', '', text)
-    # Remove markdown tables (pipe-based)
     lines = text.split('\n')
     cleaned = []
     for line in lines:
         stripped = line.strip()
-        # Skip table separator lines (|---|---|)
         if re.match(r'^[\|\-\s:]+$', stripped) and '|' in stripped:
             continue
-        # Convert table rows to plain text
         if stripped.startswith('|') and stripped.endswith('|'):
             cells = [c.strip() for c in stripped.strip('|').split('|')]
             cells = [c for c in cells if c]
@@ -64,59 +60,51 @@ def _markdown_to_attributed(text, base_size=13.5):
     base_font = NSFont.systemFontOfSize_(base_size)
     bold_font = NSFont.boldSystemFontOfSize_(base_size)
     heading_font = NSFont.boldSystemFontOfSize_(base_size + 2)
-    code_font = NSFont.userFixedPitchFontOfSize_(base_size - 1)
     white = NSColor.whiteColor()
-    gray = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.75, 0.75, 0.8, 1.0)
     accent = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.5, 0.8, 1.0, 1.0)
-    code_bg = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.2, 0.2, 0.22, 1.0)
+    gray = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.75, 0.75, 0.8, 1.0)
 
     lines = text.split('\n')
     in_code_block = False
 
-    for i, line in enumerate(lines):
+    for line in lines:
         stripped = line.strip()
 
-        # Code block toggle
         if stripped.startswith('```'):
             in_code_block = not in_code_block
             continue
 
         if in_code_block:
+            code_font = NSFont.userFixedPitchFontOfSize_(base_size - 1)
             _append(result, line + '\n', code_font, gray)
             continue
 
-        # Empty line
         if not stripped:
             _append(result, '\n', base_font, white)
             continue
 
-        # Headers (## Title)
         m = re.match(r'^#{1,3}\s+(.+)', stripped)
         if m:
             _append(result, m.group(1) + '\n', heading_font, accent)
             continue
 
-        # Bullet points
         m = re.match(r'^[\-\*•]\s+(.+)', stripped)
         if m:
             _append_inline(result, '  • ' + m.group(1) + '\n', base_font, bold_font, white)
             continue
 
-        # Numbered lists
         m = re.match(r'^(\d+)[.)]\s+(.+)', stripped)
         if m:
             _append_inline(result, f'  {m.group(1)}. ' + m.group(2) + '\n',
                            base_font, bold_font, white)
             continue
 
-        # Regular line — process inline bold/code
         _append_inline(result, stripped + '\n', base_font, bold_font, white)
 
     return result
 
 
 def _append(result, text, font, color):
-    """Append plain text segment."""
     s = NSMutableAttributedString.alloc().initWithString_(text)
     r = NSMakeRange(0, s.length())
     s.addAttribute_value_range_(NSFontAttributeName, font, r)
@@ -125,8 +113,6 @@ def _append(result, text, font, color):
 
 
 def _append_inline(result, text, base_font, bold_font, color):
-    """Append text with inline **bold** and `code` rendering."""
-    # Split by **bold** and `code` patterns
     parts = re.split(r'(\*\*[^*]+\*\*|`[^`]+`)', text)
     for part in parts:
         if part.startswith('**') and part.endswith('**'):
@@ -150,12 +136,38 @@ class AnswerContentView(NSView):
         path.fill()
 
 
+class _ButtonHandler(NSObject):
+    """NSObject subclass to handle button actions."""
+
+    _callback = None
+
+    def initWithCallback_(self, callback):
+        self = objc.super(_ButtonHandler, self).init()
+        if self is None:
+            return None
+        self._callback = callback
+        return self
+
+    @objc.typedSelector(b"v@:@")
+    def onClick_(self, sender):
+        if self._callback:
+            self._callback()
+
+
 class AnswerWindow:
     """Floating window that displays AI answers."""
 
     def __init__(self):
         self.window = None
         self.text_view = None
+        self._detail_btn = None
+        self._btn_handler = None
+        self._last_question = None
+        self._on_detail = None  # callback for "Подробнее"
+
+    def set_on_detail(self, callback):
+        """Set callback for detail button: callback(question)."""
+        self._on_detail = callback
 
     def _create_window(self):
         screen = NSScreen.mainScreen().frame()
@@ -180,7 +192,42 @@ class AnswerWindow:
         )
         self.window.setContentView_(bg)
 
-        scroll_frame = ((PADDING, PADDING), (WINDOW_W - 2 * PADDING, WINDOW_H - 2 * PADDING))
+        # "Подробнее" button at the bottom
+        btn_w = 110
+        btn_x = WINDOW_W - PADDING - btn_w
+        btn_y = PADDING - 2
+
+        self._btn_handler = _ButtonHandler.alloc().initWithCallback_(self._on_detail_click)
+
+        self._detail_btn = NSButton.alloc().initWithFrame_(
+            ((btn_x, btn_y), (btn_w, BUTTON_H))
+        )
+        self._detail_btn.setTitle_("Подробнее")
+        self._detail_btn.setBezelStyle_(1)
+        self._detail_btn.setTarget_(self._btn_handler)
+        self._detail_btn.setAction_(objc.selector(self._btn_handler.onClick_, signature=b"v@:@"))
+        self._detail_btn.setWantsLayer_(True)
+        bg.addSubview_(self._detail_btn)
+
+        # "Закрыть" button
+        close_btn_w = 80
+        close_x = PADDING
+
+        self._close_handler = _ButtonHandler.alloc().initWithCallback_(self.hide)
+
+        self._close_btn = NSButton.alloc().initWithFrame_(
+            ((close_x, btn_y), (close_btn_w, BUTTON_H))
+        )
+        self._close_btn.setTitle_("Закрыть")
+        self._close_btn.setBezelStyle_(1)
+        self._close_btn.setTarget_(self._close_handler)
+        self._close_btn.setAction_(objc.selector(self._close_handler.onClick_, signature=b"v@:@"))
+        bg.addSubview_(self._close_btn)
+
+        # Scrollable text view (above buttons)
+        text_top = PADDING + BUTTON_H + 8
+        scroll_h = WINDOW_H - text_top - PADDING
+        scroll_frame = ((PADDING, text_top), (WINDOW_W - 2 * PADDING, scroll_h))
         scroll = NSScrollView.alloc().initWithFrame_(scroll_frame)
         scroll.setHasVerticalScroller_(True)
         scroll.setHasHorizontalScroller_(False)
@@ -189,7 +236,7 @@ class AnswerWindow:
         scroll.setBorderType_(0)
 
         content_w = WINDOW_W - 2 * PADDING - 4
-        text_frame = ((0, 0), (content_w, WINDOW_H - 2 * PADDING))
+        text_frame = ((0, 0), (content_w, scroll_h))
         self.text_view = NSTextView.alloc().initWithFrame_(text_frame)
         self.text_view.setEditable_(False)
         self.text_view.setSelectable_(True)
@@ -205,10 +252,16 @@ class AnswerWindow:
         scroll.setDocumentView_(self.text_view)
         bg.addSubview_(scroll)
 
+    def _on_detail_click(self):
+        if self._on_detail and self._last_question:
+            self._on_detail(self._last_question)
+
     def show(self, question, answer):
         """Show the answer window with question and response."""
         if not self.window:
             self._create_window()
+
+        self._last_question = question
 
         screen = NSScreen.mainScreen().frame()
         x = screen.origin.x + (screen.size.width - WINDOW_W) / 2
@@ -217,26 +270,25 @@ class AnswerWindow:
 
         styled = NSMutableAttributedString.alloc().init()
 
-        # Question
         gray = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.55, 0.55, 0.6, 1.0)
         label_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.45, 0.45, 0.5, 1.0)
         _append(styled, "Вопрос: ", NSFont.boldSystemFontOfSize_(11), label_color)
         _append(styled, question + "\n\n",
                 NSFont.systemFontOfSize_(12.5), gray)
 
-        # Separator
-        _append(styled, "─" * 40 + "\n\n",
-                NSFont.systemFontOfSize_(8),
-                NSColor.colorWithCalibratedRed_green_blue_alpha_(0.3, 0.3, 0.35, 1.0))
+        sep_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.3, 0.3, 0.35, 1.0)
+        _append(styled, "─" * 45 + "\n\n", NSFont.systemFontOfSize_(8), sep_color)
 
-        # Answer with markdown rendering
         answer_styled = _markdown_to_attributed(answer)
         styled.appendAttributedString_(answer_styled)
 
         self.text_view.textStorage().setAttributedString_(styled)
-
-        # Scroll to top
         self.text_view.scrollRangeToVisible_(NSMakeRange(0, 0))
+
+        # Show/enable detail button
+        if self._detail_btn:
+            self._detail_btn.setEnabled_(True)
+            self._detail_btn.setTitle_("Подробнее")
 
         self.window.setAlphaValue_(0.0)
         self.window.orderFront_(None)
@@ -249,6 +301,8 @@ class AnswerWindow:
     def show_loading(self, question):
         """Show window with loading state."""
         self.show(question, "Думаю...")
+        if self._detail_btn:
+            self._detail_btn.setEnabled_(False)
 
     def hide(self):
         """Hide the answer window."""

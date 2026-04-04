@@ -177,6 +177,10 @@ class HotkeyManager:
                     log.info(">>> QA ЗАПИСЬ ОТМЕНЕНА (Esc)")
                     self.on_cancel()
                     return True
+                # Also try cancel for answer window dismissal
+                if self.on_cancel:
+                    self.on_cancel()
+                    # Don't consume — let Esc pass to other apps too
                 return False
 
             # Q&A mode: same key + Ctrl added (e.g. Ctrl+Opt+Space)
