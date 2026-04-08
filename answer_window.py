@@ -67,15 +67,50 @@ def _clean_markdown(text):
     text = re.sub(r'<[^>]+>', '', text)
     lines = text.split('\n')
     cleaned = []
+    table_rows = []
+
     for line in lines:
         stripped = line.strip()
+        # Table separator line (|---|---|)
         if re.match(r'^[\|\-\s:]+$', stripped) and '|' in stripped:
             continue
+        # Table row
         if stripped.startswith('|') and stripped.endswith('|'):
             cells = [c.strip() for c in stripped.strip('|').split('|')]
-            cells = [c for c in cells if c]
-            line = '    '.join(cells)
+            table_rows.append(cells)
+            continue
+        # Flush table if we had one
+        if table_rows:
+            col_widths = []
+            for row in table_rows:
+                for j, cell in enumerate(row):
+                    if j >= len(col_widths):
+                        col_widths.append(0)
+                    col_widths[j] = max(col_widths[j], len(cell))
+            for row in table_rows:
+                formatted = "  ".join(
+                    cell.ljust(col_widths[j]) if j < len(col_widths) else cell
+                    for j, cell in enumerate(row)
+                )
+                cleaned.append("  " + formatted)
+            table_rows = []
         cleaned.append(line)
+
+    # Flush remaining table
+    if table_rows:
+        col_widths = []
+        for row in table_rows:
+            for j, cell in enumerate(row):
+                if j >= len(col_widths):
+                    col_widths.append(0)
+                col_widths[j] = max(col_widths[j], len(cell))
+        for row in table_rows:
+            formatted = "  ".join(
+                cell.ljust(col_widths[j]) if j < len(col_widths) else cell
+                for j, cell in enumerate(row)
+            )
+            cleaned.append("  " + formatted)
+
     return '\n'.join(cleaned)
 
 
@@ -263,6 +298,8 @@ class AnswerWindow:
         self.text_view = None
         self._detail_btn = None
         self._btn_handler = None
+        self._copy_btn = None
+        self._copy_handler = None
         self._last_question = None
         self._on_detail = None
 
@@ -305,6 +342,17 @@ class AnswerWindow:
         self._close_btn.setTarget_(self._close_handler)
         self._close_btn.setAction_(objc.selector(self._close_handler.onClick_, signature=b"v@:@"))
         bg.addSubview_(self._close_btn)
+
+        # "Копировать" button (center)
+        self._copy_handler = _ButtonHandler.alloc().initWithCallback_(self._copy_answer)
+        self._copy_btn = NSButton.alloc().initWithFrame_(
+            ((WINDOW_W / 2 - 50, btn_y), (100, BUTTON_H))
+        )
+        self._copy_btn.setTitle_("Копировать")
+        self._copy_btn.setBezelStyle_(1)
+        self._copy_btn.setTarget_(self._copy_handler)
+        self._copy_btn.setAction_(objc.selector(self._copy_handler.onClick_, signature=b"v@:@"))
+        bg.addSubview_(self._copy_btn)
 
         # "Подробнее" button (right)
         btn_w = 120
@@ -350,6 +398,36 @@ class AnswerWindow:
         if self._on_detail and self._last_question:
             self._on_detail(self._last_question)
 
+    def _copy_answer(self):
+        """Copy the answer text to clipboard."""
+        if self.text_view:
+            text = self.text_view.textStorage().string()
+            parts = text.split('─' * 55, 1)
+            answer_text = parts[1].strip() if len(parts) > 1 else text
+            from AppKit import NSPasteboard, NSPasteboardTypeString
+            pb = NSPasteboard.generalPasteboard()
+            pb.clearContents()
+            pb.setString_forType_(answer_text, NSPasteboardTypeString)
+            if self._copy_btn:
+                self._copy_btn.setTitle_("✓ Скопировано")
+
+    def update_answer(self, question, answer):
+        """Update the answer text progressively (for streaming)."""
+        if not self.window or not self.text_view:
+            self.show(question, answer)
+            return
+        self._last_question = question
+        styled = NSMutableAttributedString.alloc().init()
+        _append(styled, "Вопрос:  ", NSFont.boldSystemFontOfSize_(11), _DIM)
+        _append(styled, question + "\n\n", NSFont.systemFontOfSize_(12.5), _GRAY)
+        _append(styled, '─' * 55 + '\n\n', NSFont.systemFontOfSize_(6), _SEPARATOR_COLOR)
+        answer_styled = _markdown_to_attributed(answer)
+        styled.appendAttributedString_(answer_styled)
+        self.text_view.textStorage().setAttributedString_(styled)
+        # Auto-scroll to bottom as new content arrives
+        length = self.text_view.textStorage().length()
+        self.text_view.scrollRangeToVisible_(NSMakeRange(length, 0))
+
     def show(self, question, answer):
         """Show the answer window with question and response."""
         if not _WHITE:
@@ -383,6 +461,8 @@ class AnswerWindow:
         if self._detail_btn:
             self._detail_btn.setEnabled_(True)
             self._detail_btn.setTitle_("Подробнее ›")
+        if self._copy_btn:
+            self._copy_btn.setTitle_("Копировать")
 
         self.window.setAlphaValue_(0.0)
         self.window.orderFront_(None)

@@ -63,7 +63,12 @@ class AudioRecorder:
             self._current_rms = 0.0
 
     def start_recording(self):
-        """Start recording from the default microphone."""
+        """Start recording from the default microphone.
+
+        Buffer setup runs synchronously (instant). The actual sd.InputStream
+        creation runs in a background thread because PortAudio can hang for
+        seconds (Bluetooth, device switching) and would freeze the main thread.
+        """
         with self._lock:
             if self._recording:
                 return
@@ -75,34 +80,78 @@ class AudioRecorder:
                 [0.0] * AMPLITUDE_HISTORY_SIZE, maxlen=AMPLITUDE_HISTORY_SIZE
             )
             self._recording = True
+
+        # Open the audio stream off the main thread.
+        def _try_open():
+            return sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype=DTYPE,
+                callback=self._callback,
+            )
+
+        def _open_stream():
+            stream = None
             try:
-                self._stream = sd.InputStream(
-                    samplerate=SAMPLE_RATE,
-                    channels=CHANNELS,
-                    dtype=DTYPE,
-                    callback=self._callback,
-                )
-                self._stream.start()
-            except sd.PortAudioError as e:
-                self._recording = False
-                self._buffer = None
+                try:
+                    stream = _try_open()
+                    stream.start()
+                except Exception as e1:
+                    # PortAudio is in a bad state (PaErrorCode -9986 etc.)
+                    # Often happens after audio device switch (Bluetooth).
+                    # Try to recover by re-initializing PortAudio.
+                    log.warning("Микрофон не открылся (%s), перезапускаю PortAudio...", e1)
+                    try:
+                        sd._terminate()
+                        sd._initialize()
+                    except Exception as reinit_err:
+                        log.warning("PortAudio re-init: %s", reinit_err)
+                    stream = _try_open()
+                    stream.start()
+                    log.info("Микрофон восстановлен после re-init")
+
+                with self._lock:
+                    if self._recording:
+                        self._stream = stream
+                    else:
+                        # User already stopped — discard
+                        try:
+                            stream.stop()
+                            stream.close()
+                        except Exception:
+                            pass
+            except Exception as e:
+                with self._lock:
+                    self._recording = False
+                    self._buffer = None
                 log.error("Ошибка микрофона: %s", e)
                 if self._on_error:
-                    self._on_error(f"Ошибка микрофона: {e}")
+                    self._on_error(f"Микрофон недоступен. Попробуйте переключить аудио-устройство.")
+
+        threading.Thread(target=_open_stream, daemon=True).start()
 
     def stop_recording(self):
         """Stop recording and save to a temporary WAV file. Returns file path."""
+        stream_to_close = None
         with self._lock:
             if not self._recording:
                 return None
             self._recording = False
-            if self._stream:
+            stream_to_close = self._stream
+            self._stream = None
+
+        # Close stream OUTSIDE the lock in a fire-and-forget daemon thread.
+        # Never join/wait — PortAudio stream.stop() can hang (Bluetooth, device
+        # switch) and would block the main thread, freezing the entire UI.
+        # Audio data is already in self._buffer, so we don't need the stream anymore.
+        if stream_to_close:
+            def _close():
                 try:
-                    self._stream.stop()
-                    self._stream.close()
+                    stream_to_close.stop()
+                    stream_to_close.close()
                 except Exception as e:
                     log.warning("Ошибка при остановке записи: %s", e)
-                self._stream = None
+            threading.Thread(target=_close, daemon=True).start()
 
         if self._buffer is None or self._write_pos == 0:
             return None

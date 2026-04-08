@@ -72,6 +72,34 @@ def _play_sound(name):
         subprocess.Popen(["afplay", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+_haptic_warned = False
+
+
+def _haptic():
+    """Trigger haptic feedback on Macs with Force Touch trackpad.
+
+    NOTE: only works when the user has a Force Touch trackpad as input.
+    External keyboards/mice cannot trigger haptic — this is a hardware
+    limitation, not a bug.
+    """
+    global _haptic_warned
+    try:
+        from AppKit import NSHapticFeedbackManager
+        performer = NSHapticFeedbackManager.defaultPerformer()
+        if performer is None:
+            if not _haptic_warned:
+                log.info("Haptic недоступен (нет Force Touch trackpad)")
+                _haptic_warned = True
+            return
+        # Pattern 2 = LevelChange — most noticeable
+        # Performance 0 = default
+        performer.performFeedbackPattern_performanceTime_(2, 0)
+    except Exception as e:
+        if not _haptic_warned:
+            log.info("Haptic ошибка: %s", e)
+            _haptic_warned = True
+
+
 def _get_clipboard():
     """Get current clipboard text."""
     try:
@@ -115,7 +143,7 @@ class VoiceTypeApp(rumps.App):
         self.recorder = AudioRecorder(
             max_seconds=self.config["max_recording_seconds"],
             on_error=lambda msg: self._run_on_main(
-                lambda: rumps.notification(APP_NAME, "Ошибка", msg)
+                lambda: self._on_mic_error(msg)
             ),
         )
         self.overlay = RecordingOverlay()
@@ -128,6 +156,8 @@ class VoiceTypeApp(rumps.App):
         self._qa_mode = False  # True when recording a Q&A question
         self._agent_mode = False  # True when recording an agent command
         self._qa_history = []  # conversation history for Q&A mode
+        self._processing_timer = None
+        self._processing_gen = 0
 
         # Thread-safe queue for dispatching work to the main thread.
         # AppKit/rumps UI must only be touched from the main thread;
@@ -310,8 +340,14 @@ class VoiceTypeApp(rumps.App):
         # Sound feedback
         if state == RECORDING:
             _play_sound("Tink")
+            _haptic()
         elif state == IDLE and prev != IDLE:
             _play_sound("Pop")
+            _haptic()
+
+        # Stop processing timeout when leaving PROCESSING
+        if prev == PROCESSING and state != PROCESSING:
+            self._stop_processing_timeout()
 
         # Animated overlay
         if state == RECORDING:
@@ -328,6 +364,7 @@ class VoiceTypeApp(rumps.App):
             self._start_duration_timer()
         elif state == PROCESSING:
             self._stop_duration_timer()
+            self._start_processing_timeout()
             if self._agent_mode:
                 proc_label = "Выполняю..." if lang == "ru" else "Executing..."
             elif self._qa_mode:
@@ -358,6 +395,51 @@ class VoiceTypeApp(rumps.App):
         self.overlay.set_duration(f"{mins}:{secs:02d}")
         # Feed amplitude history to waveform
         self.overlay.set_amplitudes(self.recorder.get_amplitude_history())
+
+    # --- Processing timeout ---
+
+    def _on_mic_error(self, msg):
+        """Called on the main thread when the microphone fails to open."""
+        log.warning("Microphone error: %s", msg)
+        # Reset state immediately so the next press works
+        self._qa_mode = False
+        self._agent_mode = False
+        if self.state != IDLE:
+            self._set_state(IDLE)
+        rumps.notification(APP_NAME, "Микрофон недоступен", msg)
+
+    def _start_processing_timeout(self):
+        """Start a 15-second timeout for processing state."""
+        self._stop_processing_timeout()
+        self._processing_gen = self._generation
+        gen = self._generation
+        # Use threading.Timer instead of rumps.Timer (which fires immediately).
+        # The callback dispatches back to the main thread via _run_on_main.
+        def _on_timeout():
+            self._run_on_main(lambda: self._processing_timed_out(gen))
+        self._processing_timer = threading.Timer(15.0, _on_timeout)
+        self._processing_timer.daemon = True
+        self._processing_timer.start()
+
+    def _stop_processing_timeout(self):
+        if self._processing_timer:
+            try:
+                self._processing_timer.cancel()
+            except Exception:
+                pass
+            self._processing_timer = None
+
+    def _processing_timed_out(self, gen):
+        """Called when processing takes too long (runs on main thread)."""
+        self._stop_processing_timeout()
+        # Skip if generation changed (processing already completed/cancelled)
+        if gen != self._generation:
+            return
+        if self.state == PROCESSING:
+            log.warning("Обработка превысила таймаут (15с)")
+            self.overlay.show_processing("Таймаут... Esc — отмена")
+            rumps.notification(APP_NAME, "Долгая обработка",
+                              "Транскрипция занимает больше 15 секунд. Нажмите Esc для отмены.")
 
     # --- Hotkey learning ---
 
@@ -550,6 +632,7 @@ class VoiceTypeApp(rumps.App):
 
     def _do_activate(self):
         """Actual activation logic, runs on main thread."""
+        log.info("_do_activate: state=%s agent=%s qa=%s", self.state, self._agent_mode, self._qa_mode)
         if self.state == LEARNING:
             return
         if self.state == RECORDING:
@@ -583,6 +666,7 @@ class VoiceTypeApp(rumps.App):
 
     def _do_deactivate(self):
         """Actual deactivation logic, runs on main thread."""
+        log.info("_do_deactivate: state=%s recording=%s", self.state, self.recorder.is_recording())
         mode = self.config.get("mode", "push_to_talk")
         if mode == "push_to_talk":
             if self.state == RECORDING or self.recorder.is_recording():
@@ -599,6 +683,12 @@ class VoiceTypeApp(rumps.App):
             if audio_path:
                 self.recorder.cleanup_file(audio_path)
             log.info("Запись отменена (Esc)")
+            self._qa_mode = False
+            self._agent_mode = False
+            self._set_state(IDLE)
+        elif self.state == PROCESSING:
+            log.info("Обработка отменена (Esc)")
+            self._generation += 1  # invalidate current processing
             self._qa_mode = False
             self._agent_mode = False
             self._set_state(IDLE)
@@ -632,7 +722,7 @@ class VoiceTypeApp(rumps.App):
         self._run_on_main(self._do_qa_deactivate)
 
     def _do_qa_deactivate(self):
-        if self.state == RECORDING and self._qa_mode:
+        if self._qa_mode and (self.state == RECORDING or self.recorder.is_recording()):
             self._stop_and_process_qa()
 
     def _stop_and_process_qa(self):
@@ -674,8 +764,11 @@ class VoiceTypeApp(rumps.App):
             # Show loading state
             self._run_on_main(lambda: self.answer_window.show_loading(question))
 
-            # Send to OpenRouter with conversation history
-            answer = self._ask_openrouter(question)
+            # Send to LLM based on configured backend (with streaming)
+            def _on_stream_chunk(text_so_far):
+                self._run_on_main(lambda: self.answer_window.update_answer(question, text_so_far))
+
+            answer = self._ask_qa_llm(question, stream_callback=_on_stream_chunk)
             log.info("QA ответ: %s", answer[:100])
 
             # Save to conversation history (keep last 10 exchanges)
@@ -720,9 +813,70 @@ class VoiceTypeApp(rumps.App):
         "long":   ("Отвечай развёрнуто и подробно. Используй списки, примеры.", 1500),
     }
 
-    def _ask_openrouter(self, question, detailed=False):
+    def _ask_qa_llm(self, question, detailed=False, stream_callback=None):
+        """Route Q&A to the configured LLM backend."""
+        backend = self.config.get("qa_llm_backend", "auto")
+        if backend == "groq":
+            return self._ask_groq_qa(question, detailed=detailed, stream_callback=stream_callback)
+        elif backend == "openrouter":
+            return self._ask_openrouter(question, detailed=detailed, stream_callback=stream_callback)
+        else:  # auto: try groq first, fallback to openrouter
+            if self._cloud_transcriber:
+                try:
+                    return self._ask_groq_qa(question, detailed=detailed, stream_callback=stream_callback)
+                except Exception as e:
+                    log.warning("QA Groq failed: %s, trying OpenRouter", e)
+            return self._ask_openrouter(question, detailed=detailed, stream_callback=stream_callback)
+
+    def _ask_groq_qa(self, question, detailed=False, stream_callback=None):
+        """Send Q&A question to Groq LLM."""
+        if not self._cloud_transcriber:
+            raise RuntimeError("Groq API ключ не задан")
+        lang = self.config.get("language", "ru")
+        if detailed:
+            length_key = "long"
+        else:
+            length_key = self.config.get("qa_answer_length", "short")
+        length_prompt, max_tokens = self._QA_LENGTHS.get(length_key, self._QA_LENGTHS["short"])
+
+        system_msg = (
+            "Ты полезный AI-ассистент. "
+            f"{length_prompt} "
+            f"Отвечай на {'русском' if lang == 'ru' else 'английском'} языке."
+        )
+        messages = [{"role": "system", "content": system_msg}]
+        if self._qa_history:
+            messages.extend(self._qa_history[-10:])
+        messages.append({"role": "user", "content": question})
+
+        if stream_callback:
+            stream = self._cloud_transcriber.client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=0.7,
+                stream=True,
+            )
+            full_text = ""
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content or ""
+                if delta:
+                    full_text += delta
+                    stream_callback(full_text)
+            return full_text
+        else:
+            response = self._cloud_transcriber.client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=0.7,
+            )
+            return response.choices[0].message.content
+
+    def _ask_openrouter(self, question, detailed=False, stream_callback=None):
         """Send question to OpenRouter with automatic model rotation."""
         import httpx
+        import json as _json
         api_key = self.config.get("openrouter_api_key", "")
         if not api_key:
             raise RuntimeError("OpenRouter API ключ не задан (настройки)")
@@ -749,39 +903,71 @@ class VoiceTypeApp(rumps.App):
         preferred = self.config.get("qa_model", self._QA_MODELS[0])
         models_to_try = [preferred] + [m for m in self._QA_MODELS if m != preferred]
 
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
         last_error = None
         for model in models_to_try:
+            body = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+            }
             try:
-                resp = httpx.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": model,
-                        "messages": messages,
-                        "max_tokens": max_tokens,
-                    },
-                    timeout=30,
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    answer = data["choices"][0]["message"]["content"]
-                    if model != preferred:
-                        log.info("QA: использована запасная модель %s", model)
-                    return answer
-                elif resp.status_code in (429, 503):
-                    log.warning("QA: %s → %s, пробую следующую", model, resp.status_code)
-                    last_error = f"{model}: HTTP {resp.status_code}"
-                    continue
-                elif resp.status_code == 404:
-                    log.warning("QA: %s недоступна (404), пробую следующую", model)
-                    last_error = f"{model}: недоступна"
-                    continue
+                if stream_callback:
+                    body["stream"] = True
+                    with httpx.stream("POST", url, headers=headers, json=body, timeout=30) as response:
+                        if response.status_code == 200:
+                            full_text = ""
+                            for line in response.iter_lines():
+                                if line.startswith("data: "):
+                                    data = line[6:]
+                                    if data == "[DONE]":
+                                        break
+                                    try:
+                                        chunk = _json.loads(data)
+                                        delta = chunk["choices"][0].get("delta", {}).get("content", "")
+                                        if delta:
+                                            full_text += delta
+                                            stream_callback(full_text)
+                                    except (_json.JSONDecodeError, KeyError, IndexError):
+                                        continue
+                            if model != preferred:
+                                log.info("QA: использована запасная модель %s", model)
+                            return full_text
+                        elif response.status_code in (429, 503):
+                            log.warning("QA: %s → %s, пробую следующую", model, response.status_code)
+                            last_error = f"{model}: HTTP {response.status_code}"
+                            continue
+                        elif response.status_code == 404:
+                            log.warning("QA: %s недоступна (404), пробую следующую", model)
+                            last_error = f"{model}: недоступна"
+                            continue
+                        else:
+                            last_error = f"{model}: HTTP {response.status_code}"
+                            continue
                 else:
-                    last_error = f"{model}: HTTP {resp.status_code}"
-                    continue
+                    resp = httpx.post(url, headers=headers, json=body, timeout=30)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        answer = data["choices"][0]["message"]["content"]
+                        if model != preferred:
+                            log.info("QA: использована запасная модель %s", model)
+                        return answer
+                    elif resp.status_code in (429, 503):
+                        log.warning("QA: %s → %s, пробую следующую", model, resp.status_code)
+                        last_error = f"{model}: HTTP {resp.status_code}"
+                        continue
+                    elif resp.status_code == 404:
+                        log.warning("QA: %s недоступна (404), пробую следующую", model)
+                        last_error = f"{model}: недоступна"
+                        continue
+                    else:
+                        last_error = f"{model}: HTTP {resp.status_code}"
+                        continue
             except httpx.TimeoutException:
                 log.warning("QA: %s таймаут, пробую следующую", model)
                 last_error = f"{model}: таймаут"
@@ -798,7 +984,10 @@ class VoiceTypeApp(rumps.App):
 
         def _do():
             try:
-                answer = self._ask_openrouter(question, detailed=True)
+                def _on_stream_chunk(text_so_far):
+                    self._run_on_main(lambda: self.answer_window.update_answer(question, text_so_far))
+
+                answer = self._ask_qa_llm(question, detailed=True, stream_callback=_on_stream_chunk)
                 log.info("QA подробный ответ: %s", answer[:100])
                 self._run_on_main(lambda: self.answer_window.show(question, answer))
             except Exception as e:
@@ -831,7 +1020,7 @@ class VoiceTypeApp(rumps.App):
         self._run_on_main(self._do_agent_deactivate)
 
     def _do_agent_deactivate(self):
-        if self.state == RECORDING and self._agent_mode:
+        if self._agent_mode and (self.state == RECORDING or self.recorder.is_recording()):
             self._stop_and_process_agent()
 
     def _stop_and_process_agent(self):
@@ -874,14 +1063,35 @@ class VoiceTypeApp(rumps.App):
                     return  # skip LLM
 
             # Add context: active app + clipboard snippet
+            # NOTE: active app context is only added when the command explicitly
+            # references it (e.g. "close current app", "what's open"), otherwise
+            # it confuses the LLM (it picks switch_app to active app instead of
+            # open_app to the requested target).
             context = _get_frontmost_app_name()
             clipboard = _get_clipboard()
             enriched = command
-            if context:
+            cmd_lower = command.lower()
+            wants_context = any(kw in cmd_lower for kw in (
+                "это приложение", "текущее", "активное", "это окно",
+                "current app", "this app", "active app", "this window",
+                "закрой это", "сверни это",
+            ))
+            if context and wants_context:
                 enriched += f" [активное приложение: {context}]"
             if clipboard and ("буфер" in command.lower() or "скопиро" in command.lower()
                               or "clipboard" in command.lower() or "вставь" in command.lower()):
                 enriched += f" [буфер обмена: {clipboard[:200]}]"
+
+            # Add screen context for commands that reference what's on screen
+            screen_keywords = ("экран", "вижу", "покажи", "что на", "что здесь", "что тут",
+                               "screen", "see", "показано", "написано", "текст на экране",
+                               "прочитай", "переведи с экрана")
+            if any(kw in command.lower() for kw in screen_keywords):
+                from agent import get_screen_context
+                screen_text = get_screen_context()
+                if screen_text:
+                    enriched += f" [текст на экране: {screen_text}]"
+                    log.info("Agent: OCR контекст добавлен (%d символов)", len(screen_text))
 
             # Send to LLM with tool-calling system prompt
             action_data = self._agent_ask(enriched)
@@ -890,19 +1100,32 @@ class VoiceTypeApp(rumps.App):
             log.info("Agent действие: %s — %s", action_name, reply)
 
             # Execute the action(s)
+            result = ""
             if isinstance(action_data.get("actions"), list):
                 # Chain of actions
+                results = []
                 for act in action_data["actions"]:
-                    result = execute_action(act)
-                    log.info("Agent chain: %s → %s", act.get("action"), result[:50])
+                    r = execute_action(act)
+                    log.info("Agent chain: %s → %s", act.get("action"), r[:50])
+                    results.append(r)
+                result = "\n".join(results)
             else:
                 result = execute_action(action_data)
                 log.info("Agent результат: %s", result[:100])
 
+            # For informational actions (list, search, etc.) show result
+            # in answer window instead of just voice
+            _INFO_ACTIONS = {"ticktick_list", "get_system_info", "search_web"}
+            if action_name in _INFO_ACTIONS and result:
+                self._run_on_main(lambda: self.answer_window.show(
+                    reply or action_name, result
+                ))
             # Voice feedback for agent (optional)
-            if self.config.get("agent_voice_feedback", True) and reply and action_name != "say":
-                subprocess.Popen(["say", "-r", "250", reply[:100]],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            elif self.config.get("agent_voice_feedback", True) and action_name != "say":
+                feedback = reply or result
+                if feedback:
+                    subprocess.Popen(["say", "-r", "250", feedback[:200]],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         except Exception as e:
             log.error("Agent ошибка: %s", e)
@@ -918,7 +1141,7 @@ class VoiceTypeApp(rumps.App):
             self._run_on_main(_reset)
 
     def _agent_ask(self, command):
-        """Send command to LLM — try Groq first (fast), fallback to OpenRouter."""
+        """Send command to LLM based on configured agent backend."""
         import httpx
         lang = self.config.get("language", "ru")
         system_prompt = _build_system_prompt(lang)
@@ -926,51 +1149,62 @@ class VoiceTypeApp(rumps.App):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": command},
         ]
+        backend = self.config.get("agent_llm_backend", "auto")
 
-        # 1) Try Groq (llama-3.3-70b, ~1s response time)
-        if self._cloud_transcriber:
-            try:
-                response = self._cloud_transcriber.client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=messages,
-                    temperature=0.05,
-                    max_tokens=100,
-                )
-                text = response.choices[0].message.content
-                return parse_llm_response(text)
-            except Exception as e:
-                log.warning("Agent Groq failed: %s, trying OpenRouter", e)
+        # Try Groq
+        def _try_groq():
+            if not self._cloud_transcriber:
+                raise RuntimeError("Groq API ключ не задан")
+            response = self._cloud_transcriber.client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=messages,
+                temperature=0.05,
+                max_tokens=300,
+            )
+            text = response.choices[0].message.content
+            return parse_llm_response(text)
 
-        # 2) Fallback to OpenRouter
-        api_key = self.config.get("openrouter_api_key", "")
-        if not api_key:
-            raise RuntimeError("API ключ не задан")
-
-        for model in self._QA_MODELS:
-            try:
-                resp = httpx.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": model,
-                        "messages": messages,
-                        "max_tokens": 100,
-                        "temperature": 0.05,
-                    },
-                    timeout=15,
-                )
-                if resp.status_code == 200:
-                    text = resp.json()["choices"][0]["message"]["content"]
-                    return parse_llm_response(text)
-                if resp.status_code in (429, 503, 404):
+        # Try OpenRouter
+        def _try_openrouter():
+            api_key = self.config.get("openrouter_api_key", "")
+            if not api_key:
+                raise RuntimeError("OpenRouter API ключ не задан")
+            for model in self._QA_MODELS:
+                try:
+                    resp = httpx.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": model,
+                            "messages": messages,
+                            "max_tokens": 300,
+                            "temperature": 0.05,
+                        },
+                        timeout=15,
+                    )
+                    if resp.status_code == 200:
+                        text = resp.json()["choices"][0]["message"]["content"]
+                        return parse_llm_response(text)
+                    if resp.status_code in (429, 503, 404):
+                        continue
+                except Exception:
                     continue
-            except Exception:
-                continue
+            raise RuntimeError("Все модели OpenRouter недоступны")
 
-        raise RuntimeError("Все модели недоступны")
+        if backend == "groq":
+            return _try_groq()
+        elif backend == "openrouter":
+            return _try_openrouter()
+        else:  # auto: groq first, fallback openrouter
+            if self._cloud_transcriber:
+                try:
+                    return _try_groq()
+                except Exception as e:
+                    log.warning("Agent Groq failed: %s, trying OpenRouter", e)
+            return _try_openrouter()
 
     # --- Dictation processing ---
 
